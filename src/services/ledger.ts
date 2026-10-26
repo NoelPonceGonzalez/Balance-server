@@ -510,7 +510,8 @@ function markedLiquidity(
       if (line.amount == null || !line.day) continue;
       if (line.tone !== 'in' && line.tone !== 'out') continue;
       const waiting = line.automatic === true && line.absorbed === true && line.paid !== true;
-      if (!line.paid && !waiting) continue;
+      const markable = line.automatic !== true && line.paid !== true && Boolean(line.markKey) && line.day <= today;
+      if (!line.paid && !waiting && !markable) continue;
       const key = line.markKey || `${line.day}:${line.label}`;
       flows.push({
         day: line.day,
@@ -520,6 +521,7 @@ function markedLiquidity(
         surprise: surprise.has(key),
         absorbed: line.absorbed === true,
         open: line.paid !== true,
+        automatic: line.automatic === true,
       });
     }
   }
@@ -571,6 +573,7 @@ interface CashFlow {
   surprise: boolean;
   absorbed?: boolean;
   open?: boolean;
+  automatic?: boolean;
 }
 
 export async function getDashboard(userId: string, period: string) {
