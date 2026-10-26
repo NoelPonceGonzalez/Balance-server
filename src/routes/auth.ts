@@ -1,9 +1,13 @@
+import crypto from 'crypto';
 import { Router } from 'express';
 import bcrypt from 'bcryptjs';
+import jwt from 'jsonwebtoken';
+import { config } from '../config/env.js';
 import { User } from '../models/User.js';
 import { authenticateToken, signToken, type AuthRequest } from '../middleware/auth.js';
 import { asyncRoute, rateLimit } from '../http.js';
 import { HttpError } from '../http.js';
+import { mailEnabled, sendPasswordCode } from '../services/mail.js';
 import { asText } from '../validate.js';
 
 const router = Router();
@@ -27,8 +31,27 @@ function asUsername(value: unknown): string {
   return username;
 }
 
-function escapeRegex(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+function codeHash(userId: string, code: string): string {
+  return crypto.createHmac('sha256', config.jwtSecret).update(`${userId}:${code}`).digest('hex');
+}
+
+function codesMatch(left: string, right: string): boolean {
+  const a = Buffer.from(left);
+  const b = Buffer.from(right);
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
+async function userFromBearer(req: AuthRequest) {
+  const header = req.headers.authorization;
+  const token = header?.startsWith('Bearer ') ? header.slice(7) : '';
+  if (!token) return null;
+  try {
+    const payload = jwt.verify(token, config.jwtSecret) as { userId?: string };
+    if (!payload.userId) return null;
+    return User.findById(payload.userId);
+  } catch {
+    return null;
+  }
 }
 
 router.post(
@@ -70,6 +93,63 @@ router.get(
     const user = await User.findById((req as AuthRequest).userId);
     if (!user) throw new HttpError(401, 'La sesión no es válida.');
     res.json({ user: publicUser(user) });
+  }),
+);
+
+router.post(
+  '/password/code',
+  rateLimit(5, 15 * 60 * 1000),
+  asyncRoute(async (req, res) => {
+    if (!mailEnabled()) throw new HttpError(503, 'El envío de correo no está configurado en el servidor.');
+    const sessionUser = await userFromBearer(req as AuthRequest);
+    const email = sessionUser?.email || asText(req.body?.email, 'El correo', 160).toLowerCase();
+    const user = sessionUser || (await User.findOne({ email }));
+    if (user) {
+      const code = String(crypto.randomInt(0, 1_000_000)).padStart(6, '0');
+      user.resetCodeHash = codeHash(String(user._id), code);
+      user.resetCodeExpires = new Date(Date.now() + 10 * 60 * 1000);
+      user.resetCodeTries = 0;
+      await user.save();
+      try {
+        await sendPasswordCode(user.email, code);
+      } catch (error) {
+        user.resetCodeHash = '';
+        user.resetCodeExpires = new Date(0);
+        user.resetCodeTries = 0;
+        await user.save();
+        throw error;
+      }
+    }
+    res.json({ ok: true });
+  }),
+);
+
+router.post(
+  '/password/confirm',
+  rateLimit(12, 15 * 60 * 1000),
+  asyncRoute(async (req, res) => {
+    const email = asText(req.body?.email, 'El correo', 160).toLowerCase();
+    const code = asText(req.body?.code, 'El código', 8).replace(/\s/g, '');
+    const password = asText(req.body?.password, 'La contraseña', 200);
+    if (!/^\d{6}$/.test(code)) throw new HttpError(400, 'El código tiene 6 números.');
+    if (password.length < 8) throw new HttpError(400, 'La contraseña necesita al menos 8 caracteres.');
+    const user = await User.findOne({ email });
+    if (!user?.resetCodeHash || !user.resetCodeExpires || user.resetCodeExpires.getTime() < Date.now()) {
+      throw new HttpError(400, 'El código ha caducado. Pide otro.');
+    }
+    if ((user.resetCodeTries || 0) >= 5) throw new HttpError(400, 'Demasiados intentos. Pide otro código.');
+    if (!codesMatch(codeHash(String(user._id), code), user.resetCodeHash)) {
+      user.resetCodeTries = (user.resetCodeTries || 0) + 1;
+      await user.save();
+      throw new HttpError(400, 'El código no coincide.');
+    }
+    user.passwordHash = await bcrypt.hash(password, 12);
+    user.sessionVersion = (user.sessionVersion || 0) + 1;
+    user.resetCodeHash = '';
+    user.resetCodeExpires = new Date(0);
+    user.resetCodeTries = 0;
+    await user.save();
+    res.json({ token: signToken(String(user._id), user.email, user.sessionVersion), user: publicUser(user) });
   }),
 );
 

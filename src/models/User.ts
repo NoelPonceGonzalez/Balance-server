@@ -9,6 +9,9 @@ const UserSchema = new mongoose.Schema(
     theme: { type: String, enum: ['light', 'dark', 'system'], default: 'system' },
     timezone: { type: String, default: 'Europe/Madrid' },
     sessionVersion: { type: Number, default: 0 },
+    resetCodeHash: { type: String },
+    resetCodeExpires: { type: Date },
+    resetCodeTries: { type: Number, default: 0 },
   },
   { timestamps: true },
 );
