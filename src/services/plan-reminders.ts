@@ -66,7 +66,16 @@ export async function remindDuePayments(userId: string): Promise<void> {
         const date = `${probe}-${String(Math.min(anchor, dim)).padStart(2, '0')}`;
         if (date <= start || (plan.savingsSkipped || []).includes(date)) continue;
         const confirmed = (plan.settled || []).some((item) => item.key === `savings:${date}` && item.done);
-        if (confirmed && date <= today && inWindow(date, today)) happened(`plan-auto:${plan._id}:savings:${date}`, true, plan.monthlySavings, label);
+        if (date > today || !inWindow(date, today)) continue;
+        if (confirmed) happened(`plan-auto:${plan._id}:savings:${date}`, true, plan.monthlySavings, label);
+        else {
+          dues.push({
+            key: `plan-due:${plan._id}:savings:${date}`,
+            title: `Hoy toca apartar ${euros(plan.monthlySavings)}`,
+            body: `${plan.name} · confirma el ahorro`,
+            direction: 'due',
+          });
+        }
       }
     }
     const dim = new Date(Date.UTC(Number(today.slice(0, 4)), Number(today.slice(5, 7)), 0)).getUTCDate();

@@ -197,6 +197,7 @@ router.post(
       }
     }
     await plan.save();
+    await Notification.deleteMany({ userId, quoteKey: `plan-due:${plan._id}:${key}` });
     const forecast = await forecastForPlan(plan, userId);
     res.json({ plan, forecast });
   }),

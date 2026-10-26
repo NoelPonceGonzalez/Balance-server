@@ -150,7 +150,9 @@ router.patch(
 router.get(
   '/notifications',
   asyncRoute(async (req, res) => {
-    const notifications = await Notification.find({ userId: owner(req as AuthRequest) }).sort({ createdAt: -1 }).limit(40);
+    const userId = owner(req as AuthRequest);
+    await remindDuePayments(userId);
+    const notifications = await Notification.find({ userId }).sort({ createdAt: -1 }).limit(40);
     res.json({
       notifications: notifications.map((item) => ({
         id: String(item._id),
