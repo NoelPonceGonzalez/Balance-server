@@ -38,12 +38,14 @@ router.post(
     const name = asText(req.body?.name, 'El nombre', 80);
     const email = asText(req.body?.email, 'El correo', 160).toLowerCase();
     const password = asText(req.body?.password, 'La contraseña', 200);
+    const username = req.body?.username ? asUsername(req.body.username) : '';
     if (!email.includes('@') || !email.includes('.')) throw new HttpError(400, 'El correo no es válido.');
     if (password.length < 8) throw new HttpError(400, 'La contraseña necesita al menos 8 caracteres.');
     const existing = await User.findOne({ email });
     if (existing) throw new HttpError(400, 'Ese correo ya tiene cuenta.');
+    if (username && (await User.findOne({ username }))) throw new HttpError(400, 'Ese usuario ya existe.');
     const passwordHash = await bcrypt.hash(password, 12);
-    const user = await User.create({ email, name, passwordHash });
+    const user = await User.create({ email, name, passwordHash, ...(username ? { username } : {}) });
     res.status(201).json({ token: signToken(String(user._id), user.email, 0), user: publicUser(user) });
   }),
 );
@@ -52,11 +54,11 @@ router.post(
   '/login',
   rateLimit(12, 15 * 60 * 1000),
   asyncRoute(async (req, res) => {
-    const email = asText(req.body?.email, 'El correo', 160).toLowerCase();
+    const login = asText(req.body?.login ?? req.body?.email, 'El correo o el usuario', 160).toLowerCase();
     const password = asText(req.body?.password, 'La contraseña', 200);
-    const user = await User.findOne({ email });
+    const user = await User.findOne({ $or: [{ email: login }, { username: login }] });
     const matches = user ? await bcrypt.compare(password, user.passwordHash) : false;
-    if (!user || !matches) throw new HttpError(401, 'Correo o contraseña incorrectos.');
+    if (!user || !matches) throw new HttpError(401, 'Usuario o contraseña incorrectos.');
     res.json({ token: signToken(String(user._id), user.email, user.sessionVersion ?? 0), user: publicUser(user) });
   }),
 );
