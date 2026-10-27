@@ -646,6 +646,8 @@ export interface PlanForecast {
   onTrack: boolean;
   estimatedDate: string | null;
   estimatedDateWithExpected: string | null;
+  /** Meses de más respecto a la fecha del plan inicial. Negativo si se llega antes. */
+  extraMonths: number | null;
   extraMonthlyToRecover: number | null;
   gapAtTarget: number;
   savingsEventsRemaining: number;
@@ -1027,6 +1029,12 @@ function walk(
 
 const HORIZON_DAYS = 366 * 40;
 
+function monthDistance(fromDay: string, toDay: string): number {
+  const [fromYear, fromMonth] = fromDay.slice(0, 7).split('-').map(Number);
+  const [toYear, toMonth] = toDay.slice(0, 7).split('-').map(Number);
+  return toYear * 12 + toMonth - (fromYear * 12 + fromMonth);
+}
+
 export function forecastPlan(plan: SavingsPlanInput, realBalance: number | null, today: string): PlanForecast {
   const notes: string[] = [];
   notes.push('Los ingresos esperados no forman parte del patrimonio real hasta que los registres como recibidos.');
@@ -1087,6 +1095,8 @@ export function forecastPlan(plan: SavingsPlanInput, realBalance: number | null,
     notes.push('Con el ahorro y los gastos confirmados, el objetivo no se alcanza en 40 años.');
   }
 
+  const extraMonths = estimated?.hit ? monthDistance(plan.targetDate, estimated.hit) : null;
+
   const seriesEnd = plan.targetDate > today ? plan.targetDate : today;
   const seriesWalk = walk(plan, plan.openingBalance, plan.startDate, seriesEnd, { monthlySavings: plan.monthlySavings, includeExpected: false }, null);
   const seriesExpected = walk(plan, plan.openingBalance, plan.startDate, seriesEnd, { monthlySavings: plan.monthlySavings, includeExpected: true }, null);
@@ -1127,6 +1137,7 @@ export function forecastPlan(plan: SavingsPlanInput, realBalance: number | null,
     onTrack,
     estimatedDate: estimated?.hit ?? null,
     estimatedDateWithExpected: estimatedExpected?.hit ?? null,
+    extraMonths,
     extraMonthlyToRecover,
     gapAtTarget,
     savingsEventsRemaining,

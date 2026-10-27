@@ -471,6 +471,29 @@ describe('planes de ahorro', () => {
     assert.equal(balanceMarked(back, '2026-10-27', 3246.98), 3246.98);
   });
 
+  it('un gasto que empuja la llegada más allá de la fecha inicial cuenta como mes de más', () => {
+    const base: SavingsPlanInput = {
+      openingBalance: 0,
+      startDate: '2026-10-01',
+      targetAmount: 2000,
+      targetDate: '2026-12-31',
+      monthlySavings: 1000,
+      savingsDay: 1,
+      recurring: [],
+      plannedExpenses: [],
+      incomes: [],
+    };
+    const plain = forecastPlan(base, 0, '2026-10-01');
+    assert.equal(plain.estimatedDate?.slice(0, 7), '2026-12');
+    assert.equal(plain.extraMonths, 0);
+    const late = forecastPlan({
+      ...base,
+      plannedExpenses: [{ name: 'Guantes', amount: 1000, date: '2026-11-15' }],
+    }, 0, '2026-10-01');
+    assert.equal(late.estimatedDate?.slice(0, 7), '2027-01');
+    assert.equal(late.extraMonths, 1);
+  });
+
   it('avanza los días sin salirse del calendario', () => {
     assert.equal(addDays('2026-01-31', 1), '2026-02-01');
   });
