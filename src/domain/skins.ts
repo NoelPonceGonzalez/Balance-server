@@ -117,7 +117,7 @@ export function resolveSkinLink(input: { name: string; notes?: string | null; qu
   if (!isSkinMarketName(base)) return null;
   const wear = wearOf(parsed.value);
   if (!wear) return null;
-  const rankMatch = /doppler|★|knife/i.test(base) ? input.name.match(/#\s*(\d{1,4})/) : null;
+  const rankMatch = /doppler|★|knife/i.test(base) ? input.name.match(/#\s*(\d{1,5})/) : null;
   const rank = rankMatch ? Number(rankMatch[1]) : null;
   const paint = /doppler/i.test(base) ? paintFromNotes(input.notes) : null;
   return {
@@ -137,13 +137,24 @@ export function linkSkin(name: string, floatValue: number | null): SkinLink | nu
   if (!spec) return null;
   const wear = spec.fixedWear || wearOf(floatValue);
   if (!wear) return null;
-  const rankMatch = spec.rankInName ? name.match(/#\s*(\d{1,4})/) : null;
+  const rankMatch = spec.rankInName ? name.match(/#\s*(\d{1,5})/) : null;
   const rank = rankMatch ? Number(rankMatch[1]) : null;
   return {
     marketHashName: `${spec.base} (${wear})`,
     paintIndex: spec.paintIndex ?? null,
     rank: rank != null && rank >= 1 ? rank : null,
   };
+}
+
+/** El puesto del mundo de ese float, si una venta es esa misma skin. Vale igual por encima de 500. */
+export function rankFromFloat(sales: SkinSale[], floatValue: number): number | null {
+  const ranked = sales.filter((sale) => sale.lowRank != null && sale.lowRank >= 1 && Number.isFinite(sale.floatValue));
+  if (!ranked.length || !(floatValue >= 0 && floatValue <= 1)) return null;
+  const nearest = [...ranked].sort((a, b) => Math.abs(a.floatValue - floatValue) - Math.abs(b.floatValue - floatValue));
+  const same = nearest.filter((sale) => Math.abs(sale.floatValue - floatValue) <= 0.0000005);
+  const ranks = new Set(same.map((sale) => sale.lowRank));
+  if (same.length === 0 || ranks.size !== 1) return null;
+  return same[0].lowRank;
 }
 
 function median(values: number[]): number {
@@ -215,6 +226,7 @@ export function seriesMove(points: { at: string; eur: number }[]): { changePct: 
 }
 
 export function estimateSkin(sales: SkinSale[], target: { floatValue: number; rank: number | null }): SkinEstimate | null {
-  if (target.rank != null) return fromRank(sales, target.rank);
+  const rank = target.rank ?? rankFromFloat(sales, target.floatValue);
+  if (rank != null) return fromRank(sales, rank);
   return fromFloat(sales, target.floatValue);
 }

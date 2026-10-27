@@ -7,7 +7,7 @@ import { asId, asMoney, asOptionalMoney, asText } from '../validate.js';
 import { instantInMadrid, isQuoteId, priceGrainNote, sharesForLump, type QuoteSource } from '../domain/market.js';
 import { attachQuote, checkAlerts, marketFor, priceAt, saveAlert, searchMarket, unlinkQuote } from '../services/market.js';
 import { itemStory } from '../services/story.js';
-import { searchSkins } from '../services/skins.js';
+import { rankForSkin, searchSkins } from '../services/skins.js';
 import { remindDuePayments } from '../services/plan-reminders.js';
 
 const router = Router();
@@ -49,6 +49,27 @@ router.get(
       res.json({ results: await searchSkins(query) });
     } catch {
       throw new HttpError(502, 'La búsqueda de skins no ha respondido. Prueba otra vez en unos segundos.');
+    }
+  }),
+);
+
+router.get(
+  '/rank',
+  asyncRoute(async (req, res) => {
+    const label = asText(req.query.label, 'El nombre', 80, false);
+    const marketName = asText(req.query.market, 'La skin', 100, false);
+    const floatText = asText(req.query.float, 'El float', 40, false);
+    const floatValue = Number(floatText);
+    if (!(floatValue >= 0 && floatValue <= 1)) {
+      res.json({ rank: null });
+      return;
+    }
+    const paintText = asText(req.query.paint, 'La fase', 8, false);
+    const paintIndex = /^\d{1,4}$/.test(paintText) ? Number(paintText) : null;
+    try {
+      res.json({ rank: await rankForSkin({ label, marketName, floatValue, paintIndex }) });
+    } catch {
+      res.json({ rank: null });
     }
   }),
 );

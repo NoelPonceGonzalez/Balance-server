@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { estimateSkin, linkSkin, resolveSkinLink, seriesMove, type SkinSale } from './skins.ts';
+import { estimateSkin, linkSkin, rankFromFloat, resolveSkinLink, seriesMove, type SkinSale } from './skins.ts';
 
 const talon: SkinSale[] = [
   { usd: 3600, floatValue: 0.0083046, lowRank: 32, stickers: 0 },
@@ -49,6 +49,18 @@ describe('skins', () => {
     assert.equal(redline?.link.marketHashName, 'AK-47 | Redline (Field-Tested)');
     assert.equal(redline?.link.paintIndex, null);
     assert.equal(redline?.link.rank, null);
+  });
+
+  it('lee el puesto del float, también si pasa de 500, y no lo inventa si no coincide', () => {
+    assert.equal(rankFromFloat(talon, 0.0083046), 32);
+    assert.equal(rankFromFloat([...talon, { usd: 900, floatValue: 0.00787745323, lowRank: 612, stickers: 0 }], 0.00787745323), 612);
+    assert.equal(rankFromFloat(talon, 0.00787745323), null);
+    assert.equal(rankFromFloat([
+      { usd: 1, floatValue: 0.01, lowRank: 26, stickers: 0 },
+      { usd: 1, floatValue: 0.01, lowRank: 40, stickers: 0 },
+    ], 0.01), null);
+    const priced = estimateSkin(talon, { floatValue: 0.0083046, rank: null });
+    assert.match(priced?.basis || '', /#32 del mundo/);
   });
 
   it('valora el puesto bajo con las ventas de rangos vecinos y deja fuera un puesto lejano', () => {

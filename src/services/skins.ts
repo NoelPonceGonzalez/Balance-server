@@ -1,4 +1,4 @@
-import { estimateSkin, isSkinMarketName, phasesFor, resolveSkinLink, skinBaseName, type SkinSale } from '../domain/skins.js';
+import { estimateSkin, isSkinMarketName, linkSkin, phasesFor, rankFromFloat, resolveSkinLink, skinBaseName, wearOf, type SkinSale } from '../domain/skins.js';
 import { roundMoney } from '../domain/finance.js';
 import { Holding } from '../models/Holding.js';
 import { recordSnapshot } from './ledger.js';
@@ -156,6 +156,22 @@ export async function searchSkins(query: string): Promise<SkinHit[]> {
   const hits = [...grouped.values()].slice(0, 8);
   searchCache.set(key, { at: Date.now(), hits });
   return hits;
+}
+
+export async function rankForSkin(input: { label: string; marketName: string; floatValue: number; paintIndex: number | null }): Promise<number | null> {
+  const catalog = linkSkin(input.label, input.floatValue) || linkSkin(input.marketName, input.floatValue);
+  let marketHashName = catalog?.marketHashName || '';
+  let paintIndex = catalog?.paintIndex ?? input.paintIndex;
+  const base = skinBaseName(input.marketName || input.label);
+  if (!marketHashName && isSkinMarketName(base)) {
+    const wear = wearOf(input.floatValue);
+    if (!wear || !/doppler|case hardened|fade/i.test(base)) return null;
+    marketHashName = `${base} (${wear})`;
+  }
+  if (!marketHashName) return null;
+  if (!/doppler|case hardened|fade/i.test(`${marketHashName} ${input.label} ${input.marketName}`) && paintIndex == null) return null;
+  const pack = await fetchSales(marketHashName, paintIndex);
+  return rankFromFloat(pack.sales, input.floatValue);
 }
 
 export async function refreshSkinHoldings(holdingId?: string): Promise<void> {
