@@ -56,6 +56,8 @@ describe('skins', () => {
     assert.ok(estimate);
     assert.equal(estimate.usd, 3231.95);
     assert.equal(estimate.count, 3);
+    assert.match(estimate.basis, /#26 del mundo/);
+    assert.doesNotMatch(estimate.basis, /Puesto bajo/);
     assert.match(estimate.basis, /#20/);
     assert.match(estimate.basis, /#33/);
     assert.doesNotMatch(estimate.basis, /#70/);

@@ -163,7 +163,7 @@ function fromRank(sales: SkinSale[], rank: number): SkinEstimate | null {
   return {
     usd: median(picked.map((sale) => sale.usd)),
     count: picked.length,
-    basis: `Puesto bajo #${rank}. Mediana de ${picked.length} ventas CSFloat entre el #${Math.min(...ranks)} y el #${Math.max(...ranks)}`,
+    basis: `#${rank} del mundo. Mediana de ${picked.length} ventas CSFloat entre el #${Math.min(...ranks)} y el #${Math.max(...ranks)}`,
   };
 }
 
