@@ -516,9 +516,8 @@ function markedLiquidity(
     for (const line of month.lines) {
       if (line.amount == null || !line.day) continue;
       if (line.tone !== 'in' && line.tone !== 'out') continue;
-      const waiting = line.automatic === true && line.absorbed === true && line.paid !== true;
-      const markable = line.automatic !== true && line.paid !== true && Boolean(line.markKey) && line.day <= today;
-      if (!line.paid && !waiting && !markable) continue;
+      // En liquidez solo entra lo ya aceptado o lo que ya está dentro del efectivo.
+      if (line.paid !== true && line.absorbed !== true) continue;
       const key = line.markKey || `${line.day}:${line.label}`;
       flows.push({
         day: line.day,
