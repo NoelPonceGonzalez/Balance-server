@@ -734,16 +734,23 @@ function confirmed(plan: SavingsPlanInput, key: string | undefined): { key: stri
   return plan.settled?.find((item) => item.key === key);
 }
 
-/** Sin lista de confirmaciones se mantiene el comportamiento anterior: el día llega y cuenta. */
-function fixedPaid(plan: SavingsPlanInput, key: string | undefined, day: string, today: string): boolean {
+/**
+ * La marca del usuario manda: savingsPaid, paidDates o la confirmación.
+ * Sin esa lista, un fijo entra solo al llegar su día.
+ */
+function fixedPaid(plan: SavingsPlanInput, key: string | undefined, day: string, today: string, dates?: string[]): boolean {
+  if (dates?.includes(day)) return true;
+  if (key?.startsWith('savings:') && plan.savingsPaid?.includes(day)) return true;
   if (!plan.settled) return day <= today;
   return confirmed(plan, key)?.done === true;
 }
 
-function fixedAbsorbed(plan: SavingsPlanInput, key: string | undefined, day: string, explicit = false): boolean {
+/** Ya está dentro del efectivo: el propio apunte, una confirmación de ese día, o un fijo anterior a la última actualización. Un gasto suelto no. */
+function fixedAbsorbed(plan: SavingsPlanInput, key: string | undefined, day: string, explicit = false, automatic = false): boolean {
   if (explicit) return true;
   if (!plan.includedUntil || day > plan.includedUntil) return false;
-  return confirmed(plan, key)?.done !== false;
+  if (confirmed(plan, key)?.done === true) return true;
+  return automatic;
 }
 
 function ledgerEvents(plan: SavingsPlanInput, fromDay: string, endDay: string, today: string): LedgerEvent[] {
@@ -757,15 +764,16 @@ function ledgerEvents(plan: SavingsPlanInput, fromDay: string, endDay: string, t
       const row = confirmed(plan, markKey);
       const amount = row?.done && row.amount > 0 ? row.amount : adjustment && adjustment.amount > 0 ? adjustment.amount : plan.monthlySavings;
       const custom = adjustment?.name?.trim();
+      const absorbed = fixedAbsorbed(plan, markKey, day, false, true);
       events.push({
         day,
         label: custom || ((plan.salary || 0) > 0 ? 'Nómina · parte ahorro' : `Ahorro del ${dayOfMonth(day)} de ${monthName(day)}`),
         delta: amount,
         tone: 'in',
         markKey,
-        paid: fixedPaid(plan, markKey, day, today),
+        paid: absorbed || fixedPaid(plan, markKey, day, today),
         automatic: true,
-        absorbed: fixedAbsorbed(plan, markKey, day),
+        absorbed,
       });
     }
     if (day < plan.startDate) continue;
@@ -776,15 +784,16 @@ function ledgerEvents(plan: SavingsPlanInput, fromDay: string, endDay: string, t
         const markKey = item.id ? `recurring:${item.id}:${day}` : undefined;
         const row = confirmed(plan, markKey);
         const amount = row?.done && row.amount > 0 ? row.amount : item.amount;
+        const absorbed = fixedAbsorbed(plan, markKey, day, false, true);
         events.push({
           day,
           label: item.name?.trim() || (incoming ? 'Entrada fija' : 'Gasto fijo'),
           delta: incoming ? amount : -amount,
           tone: incoming ? 'in' : 'out',
           markKey,
-          paid: fixedPaid(plan, markKey, day, today),
+          paid: absorbed || fixedPaid(plan, markKey, day, today, item.paidDates),
           automatic: true,
-          absorbed: fixedAbsorbed(plan, markKey, day),
+          absorbed,
         });
       }
     }
@@ -795,15 +804,16 @@ function ledgerEvents(plan: SavingsPlanInput, fromDay: string, endDay: string, t
       const markKey = item.id ? `interval:${item.id}:${day}` : undefined;
       const row = confirmed(plan, markKey);
       const amount = row?.done && row.amount > 0 ? row.amount : item.amount;
+      const absorbed = fixedAbsorbed(plan, markKey, day, false, true);
       events.push({
         day,
         label: `${item.name?.trim() || (incoming ? 'Entrada fija' : 'Gasto fijo')} · cada ${weeks} ${weeks === 1 ? 'semana' : 'semanas'}`,
         delta: incoming ? amount : -amount,
         tone: incoming ? 'in' : 'out',
         markKey,
-        paid: fixedPaid(plan, markKey, day, today),
+        paid: absorbed || fixedPaid(plan, markKey, day, today, item.paidDates),
         automatic: true,
-        absorbed: fixedAbsorbed(plan, markKey, day),
+        absorbed,
       });
     }
     for (const expense of plan.plannedExpenses) {
@@ -812,15 +822,16 @@ function ledgerEvents(plan: SavingsPlanInput, fromDay: string, endDay: string, t
         const markKey = expense.id ? `expense:${expense.id}` : undefined;
         const row = confirmed(plan, markKey);
         const amount = automatic && row?.done && row.amount > 0 ? row.amount : expense.amount;
+        const absorbed = fixedAbsorbed(plan, markKey, day, expense.absorbed === true, automatic);
         events.push({
           day,
           label: expense.name?.trim() || 'Gasto',
           delta: -amount,
           tone: 'out',
           markKey,
-          paid: automatic ? fixedPaid(plan, markKey, day, today) : expense.paid === true,
+          paid: absorbed || expense.paid === true || (automatic && fixedPaid(plan, markKey, day, today)),
           automatic,
-          absorbed: fixedAbsorbed(plan, markKey, day, expense.absorbed === true),
+          absorbed,
         });
       }
     }
@@ -835,7 +846,7 @@ function ledgerEvents(plan: SavingsPlanInput, fromDay: string, endDay: string, t
         delta: income.amount,
         tone: 'in',
         markKey: income.id ? `income:${income.id}` : undefined,
-        paid: automatic ? day <= today : income.paid === true,
+        paid: income.paid === true || (automatic && fixedPaid(plan, income.id ? `income:${income.id}` : undefined, day, today)),
         automatic,
       });
     }

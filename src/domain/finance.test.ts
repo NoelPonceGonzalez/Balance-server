@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
   addDays,
+  balanceMarked,
   analyzeMovements,
   applyMovementToBooks,
   assertNoSecret,
@@ -419,6 +420,55 @@ describe('planes de ahorro', () => {
     assert.equal(paid?.paid, true);
     assert.equal(paid?.amount, 1200);
     assert.equal(confirmed.find((month) => month.month === '2026-10')?.lines.at(-1)?.balance, 2200);
+  });
+
+  it('marcar un gasto o un fijo lo suma o lo resta, y quitar la marca lo devuelve', () => {
+    const plan: SavingsPlanInput = {
+      openingBalance: 3246.98,
+      startDate: '2026-10-01',
+      targetAmount: 10000,
+      targetDate: '2027-06-30',
+      monthlySavings: 1150,
+      salary: 1350,
+      savingsDay: 31,
+      settled: [],
+      includedUntil: '2026-10-26',
+      recurring: [{ id: 'gym', name: 'Gimnasio', amount: 40, dayOfMonth: 5, paidDates: [] }],
+      plannedExpenses: [
+        { id: 'trainer', name: 'Entrenador', amount: 165, date: '2026-10-14', automatic: true },
+        { id: 'wraps', name: 'Muñequeras', amount: 55, date: '2026-10-23', paid: false },
+        { id: 'gloves', name: 'Guantes', amount: 3200, date: '2026-12-01', paid: false },
+      ],
+      incomes: [{ id: 'xmas', name: 'Navidad', amount: 500, date: '2026-12-24', paid: false }],
+    };
+    const waiting = planMonths(plan, '2026-10-27');
+    const october = waiting.find((month) => month.month === '2026-10');
+    const trainer = october?.lines.find((line) => line.label === 'Entrenador');
+    const wraps = october?.lines.find((line) => line.label === 'Muñequeras');
+    const savings = october?.lines.find((line) => line.markKey === 'savings:2026-10-31');
+    assert.equal(trainer?.absorbed, true);
+    assert.equal(trainer?.paid, true);
+    assert.ok(wraps);
+    assert.equal(wraps?.absorbed === true, false);
+    assert.equal(wraps?.paid, false);
+    assert.equal(savings?.paid, false);
+    assert.equal(october?.lines.at(-1)?.balance, 3246.98);
+    assert.equal(balanceMarked(waiting, '2026-10-27', 3246.98), 3246.98);
+
+    const marked = planMonths({
+      ...plan,
+      savingsPaid: ['2026-10-31'],
+      recurring: [{ id: 'gym', name: 'Gimnasio', amount: 40, dayOfMonth: 5, paidDates: ['2026-11-05'] }],
+      plannedExpenses: [
+        { id: 'trainer', name: 'Entrenador', amount: 165, date: '2026-10-14', automatic: true },
+        { id: 'wraps', name: 'Muñequeras', amount: 55, date: '2026-10-23', paid: true },
+        { id: 'gloves', name: 'Guantes', amount: 3200, date: '2026-12-01', paid: true },
+      ],
+      incomes: [{ id: 'xmas', name: 'Navidad', amount: 500, date: '2026-12-24', paid: true }],
+    }, '2026-10-27');
+    assert.equal(balanceMarked(marked, '2026-10-27', 3246.98), 1601.98);
+    const back = planMonths(plan, '2026-10-27');
+    assert.equal(balanceMarked(back, '2026-10-27', 3246.98), 3246.98);
   });
 
   it('avanza los días sin salirse del calendario', () => {
