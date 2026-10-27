@@ -59,7 +59,12 @@ router.get(
     const kind = asText(req.query.kind, 'El mercado', 20);
     const key = asText(req.query.key, 'La cotización', 240);
     const name = asText(req.query.name, 'El nombre', 120);
-    res.json(await itemStory(owner(req as AuthRequest), { kind, key, name }));
+    const symbol = asText(req.query.symbol, 'El símbolo', 20, false);
+    const rawDays = typeof req.query.days === 'string' ? Number(req.query.days) : undefined;
+    if (rawDays != null && (!Number.isFinite(rawDays) || rawDays < 2 || rawDays > 365)) {
+      throw new HttpError(400, 'El periodo no es válido.');
+    }
+    res.json(await itemStory(owner(req as AuthRequest), { kind, key, name, symbol, days: rawDays }));
   }),
 );
 

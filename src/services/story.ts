@@ -51,8 +51,8 @@ async function coinPoints(id: string, days: number): Promise<{ at: number; eur: 
   return (data.prices || []).flatMap(([at, eur]) => (eur > 0 ? [{ at, eur: roundMoney(eur) }] : []));
 }
 
-async function coinSeries(id: string): Promise<StoryPoint[]> {
-  return (await coinPoints(id, 7)).map((point) => ({ at: new Date(point.at).toISOString(), eur: point.eur }));
+async function coinSeries(id: string, days: number): Promise<StoryPoint[]> {
+  return (await coinPoints(id, days)).map((point) => ({ at: new Date(point.at).toISOString(), eur: point.eur }));
 }
 
 function yahooRange(days: number): string {
@@ -88,8 +88,38 @@ async function yahooPoints(symbol: string, days: number): Promise<{ at: number; 
   });
 }
 
-async function yahooSeries(symbol: string): Promise<StoryPoint[]> {
-  return (await yahooPoints(symbol, 31)).map((point) => ({ at: new Date(point.at).toISOString(), eur: point.eur }));
+async function yahooSeries(symbol: string, days: number): Promise<StoryPoint[]> {
+  return (await yahooPoints(symbol, days)).map((point) => ({ at: new Date(point.at).toISOString(), eur: point.eur }));
+}
+
+const SPANS = [
+  { days: 7, label: '7 días' },
+  { days: 30, label: '1 mes' },
+  { days: 90, label: '3 meses' },
+  { days: 365, label: '1 año' },
+] as const;
+
+function pickSpan(days: number | undefined) {
+  const wanted = days && Number.isFinite(days) ? days : 30;
+  return SPANS.reduce((best, span) => (Math.abs(span.days - wanted) < Math.abs(best.days - wanted) ? span : best));
+}
+
+/** El porcentaje es el del tramo dibujado: del primer punto al último. */
+function spanChange(series: StoryPoint[], label: string): { changePct: number | null; changeLabel: string } {
+  if (series.length < 2 || !(series[0].eur > 0)) return { changePct: null, changeLabel: label };
+  const first = series[0].eur;
+  const last = series[series.length - 1].eur;
+  return { changePct: Math.round(((last - first) / first) * 1000) / 10, changeLabel: label };
+}
+
+const seriesCache = new Map<string, { at: number; series: StoryPoint[] }>();
+
+async function cachedSeries(key: string, load: () => Promise<StoryPoint[]>): Promise<StoryPoint[]> {
+  const hit = seriesCache.get(key);
+  if (hit && Date.now() - hit.at < 10 * 60_000) return hit.series;
+  const series = await load();
+  if (series.length >= 2) seriesCache.set(key, { at: Date.now(), series });
+  return series;
 }
 
 export async function dailyEuroPrices(source: 'coingecko' | 'yahoo', id: string, days: number): Promise<{ day: string; eur: number }[]> {
@@ -152,36 +182,49 @@ async function skinContext(userId: string, key: string, name: string): Promise<{
   return { base: null, paintIndex: null, yours: null, commodity: hash };
 }
 
-export async function itemStory(userId: string, input: { kind: string; key: string; name: string }): Promise<ItemStory> {
+export async function itemStory(userId: string, input: { kind: string; key: string; name: string; symbol?: string; days?: number }): Promise<ItemStory> {
   const empty = (note: string): ItemStory => ({ series: [], changePct: null, changeLabel: 'ventas', floats: [], note });
+  const span = pickSpan(input.days);
   try {
     if (input.kind === 'crypto' && input.key.startsWith('coingecko:')) {
-      const series = await coinSeries(input.key.slice('coingecko:'.length));
-      const move = seriesMove(series);
-      return { series, changePct: move.changePct, changeLabel: move.changeLabel, floats: [], note: 'La gráfica son los últimos 7 días en euros.' };
+      const id = input.key.slice('coingecko:'.length);
+      let series: StoryPoint[] = [];
+      try {
+        series = await cachedSeries(`coingecko:${id}:${span.days}`, () => coinSeries(id, span.days));
+      } catch {
+        series = [];
+      }
+      const ticker = (input.symbol || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+      if (series.length < 2 && ticker) {
+        const yahooId = `${ticker}-EUR`;
+        series = await cachedSeries(`yahoo:${yahooId}:${span.days}`, () => yahooSeries(yahooId, span.days));
+      }
+      if (series.length < 2) return empty('La fuente no ha mandado el histórico. El precio de la lista sigue siendo el último real.');
+      const move = spanChange(series, span.label);
+      return { series, ...move, floats: [], note: `La gráfica y el porcentaje son el mismo tramo: ${span.label}, en euros.` };
     }
     if ((input.kind === 'etf' || input.kind === 'stock' || input.kind === 'gold') && input.key.startsWith('yahoo:')) {
-      const series = await yahooSeries(input.key.slice('yahoo:'.length));
-      const move = seriesMove(series);
-      return { series, changePct: move.changePct, changeLabel: move.changeLabel, floats: [], note: 'La gráfica es el cierre de cada día del último mes, en euros.' };
+      const symbol = input.key.slice('yahoo:'.length);
+      const series = await cachedSeries(`yahoo:${symbol}:${span.days}`, () => yahooSeries(symbol, span.days));
+      const move = spanChange(series, span.label);
+      return { series, ...move, floats: [], note: `La gráfica y el porcentaje son el cierre de cada día: ${span.label}, en euros.` };
     }
     if (input.kind === 'cs2') {
       const context = await skinContext(userId, input.key, input.name);
       if (context.base) {
         const board = await wearBoard(context.base, context.paintIndex, context.yours);
-        const move = seriesMove(board.series);
+        const move = spanChange(board.series, 'en las ventas');
         return {
           series: board.series,
-          changePct: move.changePct,
-          changeLabel: move.changeLabel,
+          ...move,
           floats: board.floats,
-          note: 'El precio de cada float es la mediana de las ventas recientes. La gráfica es ese desgaste.',
+          note: 'El precio de cada float es la mediana de las ventas recientes. La gráfica y el porcentaje son ese desgaste, de la primera venta a la última.',
         };
       }
       const sales = context.commodity ? await pricedHistory(context.commodity, null) : [];
       const series = sales.map((sale) => ({ at: sale.at, eur: sale.eur })).sort((a, b) => a.at.localeCompare(b.at));
-      const move = seriesMove(series);
-      return { series, changePct: move.changePct, changeLabel: move.changeLabel, floats: [], note: 'Ventas recientes pasadas a euros. Una caja no tiene float.' };
+      const move = spanChange(series, 'en las ventas');
+      return { series, ...move, floats: [], note: 'Ventas recientes pasadas a euros. La gráfica y el porcentaje van de la primera a la última. Una caja no tiene float.' };
     }
     if (input.kind === 'tf2') {
       return empty('Steam no manda el histórico de TF2, así que no hay gráfica. El precio de la lista es el de ahora.');
