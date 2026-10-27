@@ -32,6 +32,14 @@ export function asOptionalMoney(value: unknown, field: string): number | null {
   return asMoney(value, field, true);
 }
 
+export function asPicture(value: unknown): string {
+  if (value == null || value === '') return '';
+  const text = asText(value, 'La imagen', 500, false);
+  if (!text) return '';
+  if (text.startsWith('/brands/') || text.startsWith('/platforms/') || text.startsWith('/extras/') || text.startsWith('https://')) return text;
+  throw new HttpError(400, 'La imagen no es válida.');
+}
+
 export function asDay(value: unknown, field: string): string {
   const text = asText(value, field, 10);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) throw new HttpError(400, `${field} tiene que ser una fecha.`);

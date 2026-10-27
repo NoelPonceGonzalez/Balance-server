@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { Wallet } from '../models/Wallet.js';
 import { authenticateToken, type AuthRequest } from '../middleware/auth.js';
 import { asyncRoute, HttpError } from '../http.js';
-import { asDay, asId, asMoney, asText } from '../validate.js';
+import { asDay, asId, asMoney, asPicture, asText } from '../validate.js';
 import { walletSeries } from '../services/wallet-series.js';
 
 const router = Router();
@@ -21,6 +21,7 @@ function readEntry(body: Record<string, unknown>) {
     date: asDay(body.date, 'La fecha'),
     direction,
     origin: asText(body.origin, direction === 'in' ? 'De dónde entra' : 'A dónde va', 80, false),
+    image: asPicture(body.image),
   };
 }
 
@@ -73,6 +74,7 @@ router.patch(
     entry.date = next.date;
     entry.direction = next.direction;
     entry.origin = next.origin;
+    entry.image = next.image;
     await wallet.save();
     res.json({ wallet });
   }),

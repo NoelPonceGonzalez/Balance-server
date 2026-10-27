@@ -5,7 +5,7 @@ import { User } from '../models/User.js';
 import { Notification } from '../models/Notification.js';
 import { authenticateToken, type AuthRequest } from '../middleware/auth.js';
 import { asyncRoute, HttpError } from '../http.js';
-import { asDay, asId, asMoney, asOptionalMoney, asText } from '../validate.js';
+import { asDay, asId, asMoney, asOptionalMoney, asPicture, asText } from '../validate.js';
 import { roundMoney, todayKey } from '../domain/finance.js';
 import { forecastForPlan } from '../services/ledger.js';
 import { listDueFixed, remindDuePayments } from '../services/plan-reminders.js';
@@ -42,6 +42,7 @@ function readEvents(value: unknown, withStatus: boolean) {
       paid: row.paid === true,
       surprise: row.surprise === true,
       automatic: row.automatic === true,
+      image: asPicture(row.image),
       ...(withStatus ? { status } : {}),
     };
   });
@@ -289,6 +290,7 @@ router.post(
         item.name = asText(body.name, 'El nombre', 80);
         item.amount = asMoney(body.amount, 'El importe');
         item.date = asDay(body.date, 'La fecha');
+        if (typeof body.image === 'string') item.image = asPicture(body.image);
       }
     } else if (kind === 'recurring') {
       const item = plan.recurring.find((row) => String(row._id) === id);
@@ -375,6 +377,7 @@ router.post(
       amount: asMoney(body.amount, 'El importe'),
       date: asDay(body.date, 'La fecha'),
       paid: body.paid === true,
+      image: asPicture(body.image),
     };
     if (body.direction === 'in') plan.incomes.push({ ...entry, status: 'confirmed', surprise: true });
     else plan.plannedExpenses.push({ ...entry, surprise: true });

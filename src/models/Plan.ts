@@ -9,6 +9,7 @@ const moneyEvent = new mongoose.Schema(
     paid: { type: Boolean, default: false },
     surprise: { type: Boolean, default: false },
     automatic: { type: Boolean, default: false },
+    image: { type: String, default: '', maxlength: 500 },
   },
   { _id: true },
 );

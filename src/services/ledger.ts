@@ -441,9 +441,9 @@ function markedLiquidity(
     savingsAdjustments?: { date: string; amount: number; name?: string }[];
     recurring?: { _id?: unknown; name?: string; amount: number; dayOfMonth: number; paidDates?: string[]; direction?: 'in' | 'out' }[];
     intervals?: { _id?: unknown; name?: string; amount: number; everyWeeks: number; startDate: string; paidDates?: string[]; direction?: 'in' | 'out' }[];
-    plannedExpenses?: { _id?: unknown; name?: string; amount: number; date: string; paid?: boolean; surprise?: boolean; automatic?: boolean }[];
+    plannedExpenses?: { _id?: unknown; name?: string; amount: number; date: string; paid?: boolean; surprise?: boolean; automatic?: boolean; image?: string }[];
     settled?: { key: string; done: boolean; amount?: number }[];
-    incomes?: { _id?: unknown; name?: string; amount: number; date: string; status?: 'expected' | 'confirmed'; paid?: boolean; surprise?: boolean; automatic?: boolean }[];
+    incomes?: { _id?: unknown; name?: string; amount: number; date: string; status?: 'expected' | 'confirmed'; paid?: boolean; surprise?: boolean; automatic?: boolean; image?: string }[];
   },
   opening: number,
   today: string,
@@ -498,11 +498,18 @@ function markedLiquidity(
     })),
   }, today);
   const surprise = new Set<string>();
+  const pictures = new Map<string, string>();
   for (const item of plan.plannedExpenses || []) {
-    if (item.surprise && item._id != null) surprise.add(`expense:${String(item._id)}`);
+    if (item._id == null) continue;
+    const key = `expense:${String(item._id)}`;
+    if (item.surprise) surprise.add(key);
+    if (item.image) pictures.set(key, item.image);
   }
   for (const item of plan.incomes || []) {
-    if (item.surprise && item._id != null) surprise.add(`income:${String(item._id)}`);
+    if (item._id == null) continue;
+    const key = `income:${String(item._id)}`;
+    if (item.surprise) surprise.add(key);
+    if (item.image) pictures.set(key, item.image);
   }
   const flows: CashFlow[] = [];
   for (const month of months) {
@@ -522,6 +529,7 @@ function markedLiquidity(
         absorbed: line.absorbed === true,
         open: line.paid !== true,
         automatic: line.automatic === true,
+        image: pictures.get(key) || '',
       });
     }
   }
@@ -574,6 +582,7 @@ interface CashFlow {
   absorbed?: boolean;
   open?: boolean;
   automatic?: boolean;
+  image?: string;
 }
 
 export async function getDashboard(userId: string, period: string) {

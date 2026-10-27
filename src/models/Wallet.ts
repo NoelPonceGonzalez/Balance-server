@@ -7,6 +7,7 @@ const EntrySchema = new mongoose.Schema(
     date: { type: String, required: true },
     direction: { type: String, enum: ['in', 'out'], required: true },
     origin: { type: String, default: '', maxlength: 80 },
+    image: { type: String, default: '', maxlength: 500 },
   },
   { timestamps: true },
 );
