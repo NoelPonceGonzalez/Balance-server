@@ -18,7 +18,26 @@ function euros(amount: number): string {
   return new Intl.NumberFormat('es-ES', { style: 'currency', currency: 'EUR', maximumFractionDigits: 0 }).format(amount);
 }
 
-export async function remindDuePayments(userId: string): Promise<void> {
+const remindPending = new Map<string, Promise<void>>();
+const remindDoneAt = new Map<string, number>();
+
+export function remindDuePayments(userId: string): Promise<void> {
+  const doneAt = remindDoneAt.get(userId) || 0;
+  if (Date.now() - doneAt < 20_000) return Promise.resolve();
+  const pending = remindPending.get(userId);
+  if (pending) return pending;
+  const job = runReminders(userId)
+    .then(() => {
+      remindDoneAt.set(userId, Date.now());
+    })
+    .finally(() => {
+      remindPending.delete(userId);
+    });
+  remindPending.set(userId, job);
+  return job;
+}
+
+async function runReminders(userId: string): Promise<void> {
   const user = await User.findById(userId).select('timezone');
   const today = todayKey(user?.timezone || 'Europe/Madrid');
   const plans = await Plan.find({ userId });

@@ -7,7 +7,7 @@ import { authenticateToken, type AuthRequest } from '../middleware/auth.js';
 import { asyncRoute, HttpError } from '../http.js';
 import { asDay, asId, asMoney, asOptionalMoney, asPicture, asText } from '../validate.js';
 import { roundMoney, todayKey } from '../domain/finance.js';
-import { forecastForPlan } from '../services/ledger.js';
+import { forecastForPlan, forecastPlanList } from '../services/ledger.js';
 import { listDueFixed, remindDuePayments } from '../services/plan-reminders.js';
 
 const router = Router();
@@ -108,13 +108,11 @@ router.get(
   '/',
   asyncRoute(async (req, res) => {
     const userId = owner(req as AuthRequest);
-    await remindDuePayments(userId);
-    const plans = await Plan.find({ userId }).sort({ createdAt: -1 });
-    const withForecast = [];
-    for (const plan of plans) {
-      const forecast = await forecastForPlan(plan, userId);
-      withForecast.push({ plan, forecast });
-    }
+    const plansPromise = Plan.find({ userId }).sort({ createdAt: -1 });
+    const remindPromise = remindDuePayments(userId);
+    const plans = await plansPromise;
+    const withForecast = await forecastPlanList(userId, plans);
+    await remindPromise;
     res.json({ plans: withForecast });
   }),
 );

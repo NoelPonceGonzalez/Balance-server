@@ -955,6 +955,61 @@ function eventAmount(events: PlanEvent[], day: string, includeExpected: boolean)
 }
 
 /** Recorre días y devuelve el saldo al final de `end`, y el primer día en que llega al objetivo. */
+function monthEndIso(iso: string): string {
+  return `${iso.slice(0, 7)}-${String(lastDayOfMonth(iso)).padStart(2, '0')}`;
+}
+
+function considerDay(next: string, candidate: string, after: string, endDay: string): string {
+  if (candidate > after && candidate <= endDay && candidate < next) return candidate;
+  return next;
+}
+
+/** El saldo solo cambia en días con movimiento. El resto se salta, sin perder el cierre de cada mes. */
+function nextStep(plan: SavingsPlanInput, day: string, endDay: string): string {
+  let next = endDay;
+  const endOfThis = monthEndIso(day);
+  if (endOfThis > day) next = considerDay(next, endOfThis, day, endDay);
+  else {
+    const firstNext = addDays(endOfThis, 1);
+    if (firstNext <= endDay) next = considerDay(next, monthEndIso(firstNext), day, endDay);
+  }
+  const anchor = savingsAnchor(plan);
+  const dim = lastDayOfMonth(day);
+  const savingsThis = `${day.slice(0, 7)}-${String(Math.min(anchor, dim)).padStart(2, '0')}`;
+  if (savingsThis > day) next = considerDay(next, savingsThis, day, endDay);
+  else if (endOfThis === day) {
+    const firstNext = addDays(day, 1);
+    if (firstNext <= endDay) {
+      next = considerDay(next, `${firstNext.slice(0, 7)}-${String(Math.min(anchor, lastDayOfMonth(firstNext))).padStart(2, '0')}`, day, endDay);
+    }
+  }
+  for (const item of plan.recurring) {
+    const due = Math.min(Math.max(1, item.dayOfMonth), dim);
+    const rec = `${day.slice(0, 7)}-${String(due).padStart(2, '0')}`;
+    if (rec > day) next = considerDay(next, rec, day, endDay);
+    else if (endOfThis === day) {
+      const firstNext = addDays(day, 1);
+      if (firstNext <= endDay) {
+        const dueNext = Math.min(Math.max(1, item.dayOfMonth), lastDayOfMonth(firstNext));
+        next = considerDay(next, `${firstNext.slice(0, 7)}-${String(dueNext).padStart(2, '0')}`, day, endDay);
+      }
+    }
+  }
+  for (const expense of plan.plannedExpenses) next = considerDay(next, expense.date.slice(0, 10), day, endDay);
+  for (const income of plan.incomes) next = considerDay(next, income.date.slice(0, 10), day, endDay);
+  for (const item of plan.intervals ?? []) {
+    if (!(item.amount > 0)) continue;
+    const start = item.startDate.slice(0, 10);
+    const every = Math.max(1, Math.round(item.everyWeeks || 1)) * 7;
+    const hit = start > day ? start : addDays(day, (() => {
+      const mod = daysBetween(start, day) % every;
+      return mod === 0 ? every : every - mod;
+    })());
+    next = considerDay(next, hit, day, endDay);
+  }
+  return next;
+}
+
 function walk(
   plan: SavingsPlanInput,
   startBalance: number,
@@ -970,7 +1025,7 @@ function walk(
   // El primer ahorro no cae el mismo día de inicio: el saldo inicial ya es el punto de partida.
   const firstSavings = plan.startDate;
 
-  for (let day = fromDay; day <= endDay; day = addDays(day, 1)) {
+  for (let day = fromDay; day <= endDay; ) {
     const dim = lastDayOfMonth(day);
     const recurringDay = Math.min(savingsAnchor(plan), dim);
     if (day > firstSavings && dayOfMonth(day) === recurringDay && !plan.savingsSkipped?.includes(day)) {
@@ -1023,6 +1078,9 @@ function walk(
     const next = addDays(day, 1);
     if (monthKey(next) !== monthKey(day) || day === endDay) monthEnds.set(monthKey(day), balance);
     if (day === endDay) break;
+    const jumped = nextStep(plan, day, endDay);
+    if (jumped <= day) break;
+    day = jumped;
   }
   return { endBalance: balance, hit, savingsEvents, monthEnds };
 }

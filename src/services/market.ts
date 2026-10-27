@@ -697,7 +697,7 @@ export async function unlinkQuote(userId: string, holdingId: string) {
 }
 
 export async function marketFor(userId: string) {
-  await ensureFresh();
+  if (Date.now() - lastAttemptAt >= FRESH_MS) void refreshMarket();
   const [holdings, accounts, alerts] = await Promise.all([
     Holding.find({ userId }).sort({ name: 1 }),
     Account.find({ userId, archived: { $ne: true } }),
@@ -782,13 +782,35 @@ export async function marketFor(userId: string) {
     etfs: tape('etf'),
     stocks: tape('stock'),
     gold: tape('gold'),
-    cs2: await withMoves([...ownedSkins(holdings, names), ...gameTape('cs2')]),
+    cs2: cs2Tape(holdings, names).map(({ hashName: _hash, paintIndex: _paint, ...rest }) => rest),
     tf2: gameTape('tf2'),
     icons: {
       cs2: gameRows.find((row) => row.kind === 'cs2' && row.appIcon)?.appIcon || null,
       tf2: gameRows.find((row) => row.kind === 'tf2' && row.appIcon)?.appIcon || null,
     },
   };
+}
+
+function cs2Tape(
+  holdings: Parameters<typeof ownedSkins>[0],
+  names: Map<string, string>,
+) {
+  return [...ownedSkins(holdings, names), ...gameTape('cs2')];
+}
+
+export async function marketSkinMoves(userId: string) {
+  const [holdings, accounts] = await Promise.all([
+    Holding.find({ userId }).sort({ name: 1 }),
+    Account.find({ userId, archived: { $ne: true } }),
+  ]);
+  const names = new Map(accounts.map((account) => [String(account._id), account.name]));
+  const moved = await withMoves(cs2Tape(holdings, names));
+  return moved.map((item) => ({
+    key: item.key,
+    changePct: item.changePct,
+    changeLabel: item.changeLabel,
+    sparkline: item.sparkline,
+  }));
 }
 
 function gameTape(kind: 'cs2' | 'tf2') {

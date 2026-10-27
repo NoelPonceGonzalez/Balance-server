@@ -585,24 +585,47 @@ interface CashFlow {
 }
 
 export async function getDashboard(userId: string, period: string) {
-  await remindDuePayments(userId);
-  const snap = await recordSnapshot(userId);
-  const portfolio = snap.portfolio;
-  const today = snap.day;
+  const [user, accounts, holdingDocs, snapshots, movementDocs, extraDocs, liquidityPlans, wallets] = await Promise.all([
+    User.findById(userId).select('timezone'),
+    Account.find({ userId, archived: { $ne: true } }).sort({ name: 1 }).lean(),
+    Holding.find({ userId }).lean(),
+    Snapshot.find({ userId }).sort({ day: 1 }).lean(),
+    Movement.find({ userId }).lean(),
+    Extra.find({ userId }).sort({ createdAt: 1 }).lean(),
+    Plan.find({ userId, kind: 'liquidez' }).lean(),
+    Wallet.find({ userId }).lean(),
+    remindDuePayments(userId),
+  ]);
+  const today = todayKey(user?.timezone || 'Europe/Madrid');
+  const accountIds = new Set(accounts.map((account) => String(account._id)));
+  const holdings = holdingDocs.filter((item) => accountIds.has(String(item.accountId)));
+  const portfolio = valuePortfolio(accounts.map(snapAccount), holdings.map(snapHolding));
+  const valuedEur = portfolio.netWorth.eur;
+  void Snapshot.updateOne(
+    { userId, day: today },
+    {
+      $set: {
+        valuedEur,
+        netWorthEur: portfolio.netWorth.complete ? valuedEur : null,
+        complete: portfolio.netWorth.complete,
+        availableEur: portfolio.available.eur,
+        investedEur: portfolio.invested.eur,
+        cryptoEur: portfolio.crypto.eur,
+      },
+    },
+    { upsert: true },
+  ).catch(() => undefined);
   const span: Record<string, number> = { '7d': 7, '30d': 30, '90d': 90, '365d': 365 };
   const key = period === 'all' || period in span ? period : '30d';
   const fromDay = key === 'all' ? '0000-01-01' : addDays(today, -(span[key] ?? 30));
-  const snapshots = await Snapshot.find({ userId }).sort({ day: 1 }).lean();
   const variation = variationFromSnapshots(
     snapshots.map((item) => ({ day: item.day, netWorthEur: item.netWorthEur ?? null })),
     today,
     portfolio.netWorth.complete ? portfolio.netWorth.eur : null,
     fromDay,
   );
-  const movements = await Movement.find({ userId, date: { $gte: fromDay === '0000-01-01' ? '0000-01-01' : fromDay, $lte: today } }).lean();
+  const movements = movementDocs.filter((item) => item.date >= (fromDay === '0000-01-01' ? '0000-01-01' : fromDay) && item.date <= today);
   const flow = analyzeMovements(movements.map(toMovementSnap), fromDay === '0000-01-01' ? null : fromDay, today);
-  const accounts = await Account.find({ userId, archived: { $ne: true } }).sort({ name: 1 }).lean();
-  const holdings = await Holding.find({ userId, accountId: { $in: accounts.map((account) => account._id) } }).lean();
   const pnl = pnlSlices(accounts.map(snapAccount), holdings.map(snapHolding)).map((slice) => {
     const account = accounts.find((item) => String(item._id) === slice.accountId);
     return {
@@ -614,7 +637,6 @@ export async function getDashboard(userId: string, period: string) {
       place: '',
     };
   });
-  const extraDocs = await Extra.find({ userId }).sort({ createdAt: 1 }).lean();
   const extraSummary = summarizeExtras(
     extraDocs.map((item) => ({
       id: String(item._id),
@@ -626,8 +648,6 @@ export async function getDashboard(userId: string, period: string) {
   );
   pnl.push(...extraSummary.pnl);
 
-  const liquidityPlans = await Plan.find({ userId, kind: 'liquidez' }).lean();
-  const wallets = await Wallet.find({ userId }).lean();
   const walletNet = new Map<string, number>();
   for (const book of wallets) {
     const net = (book.entries || []).reduce((sum, entry) => sum + (entry.direction === 'in' ? entry.amount : -entry.amount), 0);
@@ -690,9 +710,13 @@ export async function getDashboard(userId: string, period: string) {
     realized: { eur: flow.realized.eur, complete: flow.realized.complete },
     fees: { eur: flow.fees.eur, complete: flow.fees.complete },
     variation,
-    series: snapshots
-      .filter((item) => item.day >= fromDay && item.day <= today)
-      .map((item) => ({ day: item.day, eur: item.valuedEur, complete: item.complete })),
+    series: (() => {
+      const points = snapshots
+        .filter((item) => item.day >= fromDay && item.day <= today && item.day !== today)
+        .map((item) => ({ day: item.day, eur: item.valuedEur, complete: item.complete }));
+      if (today >= fromDay) points.push({ day: today, eur: valuedEur, complete: portfolio.netWorth.complete });
+      return points;
+    })(),
     allocation: allocationSlices(portfolio),
     pnl,
     extras: extraDocs.map((item) => ({
@@ -826,13 +850,14 @@ export async function forecastForPlan(
     scenarios?: { _id?: unknown; name: string; monthlySavings: number }[];
   },
   userId: string,
+  shared?: { timezone: string; books: Books | null },
 ) {
-  const user = await User.findById(userId).select('timezone');
-  const today = todayKey(user?.timezone || 'Europe/Madrid');
+  const timezone = shared?.timezone || (await User.findById(userId).select('timezone'))?.timezone || 'Europe/Madrid';
+  const today = todayKey(timezone);
   let real: number | null = plan.manualRealBalance ?? null;
   const notes: string[] = [];
   const links = (plan.linkedAccountIds || []).map(String);
-  const books = links.length ? await loadBooks(userId) : null;
+  const books = shared ? shared.books : links.length ? await loadBooks(userId) : null;
   const linked = books ? books.accounts.filter((account) => links.includes(account.id)) : [];
   if (links.length) {
     if (linked.length !== links.length) notes.push('Alguna cuenta vinculada ya no está disponible.');
@@ -853,7 +878,7 @@ export async function forecastForPlan(
   const opening = slice && !slice.incomplete ? slice.amount : plan.openingBalance;
   if (slice?.incomplete) notes.push('El plan no puede usar ese sitio hasta que el importe esté en euros.');
   const liveCash = kind === 'liquidez' && Boolean(slice && !slice.incomplete && linked.length === 1);
-  const includedUntil = liveCash && linked[0]?.updatedAt ? todayKey(user?.timezone || 'Europe/Madrid', new Date(linked[0].updatedAt)) : '';
+  const includedUntil = liveCash && linked[0]?.updatedAt ? todayKey(timezone, new Date(linked[0].updatedAt)) : '';
   const forecast = forecastPlan(
     {
       openingBalance: opening,
@@ -921,4 +946,15 @@ export async function forecastForPlan(
     today,
     anchor: slice && !slice.incomplete ? { amount: slice.amount, label: slice.label } : null,
   };
+}
+
+export async function forecastPlanList<T extends Parameters<typeof forecastForPlan>[0]>(userId: string, plans: T[]) {
+  const [user, books] = await Promise.all([
+    User.findById(userId).select('timezone'),
+    loadBooks(userId),
+  ]);
+  const shared = { timezone: user?.timezone || 'Europe/Madrid', books };
+  const withForecast = [];
+  for (const plan of plans) withForecast.push({ plan, forecast: await forecastForPlan(plan, userId, shared) });
+  return withForecast;
 }
