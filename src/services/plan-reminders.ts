@@ -18,6 +18,25 @@ function euros(amount: number): string {
   return new Intl.NumberFormat('es-ES', { style: 'currency', currency: 'EUR', maximumFractionDigits: 0 }).format(amount);
 }
 
+function dayLabel(date: string): string {
+  const months = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic'];
+  const [year, month, day] = date.slice(0, 10).split('-').map(Number);
+  return `${day || 1} ${months[(month || 1) - 1]} ${year || ''}`.trim();
+}
+
+async function ensureDue(userId: string, key: string, title: string, body: string): Promise<void> {
+  const exists = await Notification.findOne({ userId, quoteKey: key });
+  if (!exists) {
+    await Notification.create({ userId, quoteKey: key, title, body, direction: 'due', changePct: null });
+    return;
+  }
+  if (exists.title !== title || exists.body !== body) {
+    exists.title = title;
+    exists.body = body;
+    await exists.save();
+  }
+}
+
 const remindPending = new Map<string, Promise<void>>();
 const remindDoneAt = new Map<string, number>();
 
@@ -104,6 +123,12 @@ async function runReminders(userId: string): Promise<void> {
       if (date < start || date > today || !inWindow(date, today)) continue;
       const confirmed = (plan.settled || []).some((row) => row.key === `recurring:${item._id}:${date}` && row.done);
       if (confirmed) happened(`plan-auto:${plan._id}:recurring:${item._id}:${date}`, item.direction === 'in', item.amount, item.name);
+      else dues.push({
+        key: `plan-due:${plan._id}:recurring:${item._id}:${date}`,
+        title: item.direction === 'in' ? `¿Ha entrado ${item.name}?` : `¿Has pagado ${item.name}?`,
+        body: `${plan.name} · ${euros(item.amount)} · ${dayLabel(date)}`,
+        direction: 'due',
+      });
     }
     for (const item of plan.intervals || []) {
       const anchor = String(item.startDate).slice(0, 10);
@@ -114,21 +139,37 @@ async function runReminders(userId: string): Promise<void> {
         if (daysBetween(anchor, date) % every !== 0) continue;
         const confirmed = (plan.settled || []).some((row) => row.key === `interval:${item._id}:${date}` && row.done);
         if (confirmed) happened(`plan-auto:${plan._id}:interval:${item._id}:${date}`, item.direction === 'in', item.amount, item.name);
+        else dues.push({
+          key: `plan-due:${plan._id}:interval:${item._id}:${date}`,
+          title: item.direction === 'in' ? `¿Ha entrado ${item.name}?` : `¿Has pagado ${item.name}?`,
+          body: `${plan.name} · ${euros(item.amount)} · ${dayLabel(date)}`,
+          direction: 'due',
+        });
         break;
       }
     }
     for (const due of dues) {
-      const exists = await Notification.exists({ userId, quoteKey: due.key });
-      if (exists) continue;
-      await Notification.create({
-        userId,
-        quoteKey: due.key,
-        title: due.title,
-        body: due.body,
-        direction: due.direction,
-        changePct: null,
-      });
+      if (due.direction === 'due') await ensureDue(userId, due.key, due.title, due.body);
+      else if (!(await Notification.exists({ userId, quoteKey: due.key }))) {
+        await Notification.create({
+          userId,
+          quoteKey: due.key,
+          title: due.title,
+          body: due.body,
+          direction: due.direction,
+          changePct: null,
+        });
+      }
     }
+  }
+  const pending = await listDueFixed(userId);
+  for (const due of pending) {
+    await ensureDue(
+      userId,
+      `plan-due:${due.planId}:${due.key}`,
+      due.direction === 'in' ? `¿Ha entrado ${due.label}?` : `¿Has pagado ${due.label}?`,
+      `${due.planName} · ${euros(due.amount)} · ${dayLabel(due.day)}`,
+    );
   }
 }
 

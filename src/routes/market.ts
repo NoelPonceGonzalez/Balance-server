@@ -7,7 +7,8 @@ import { asId, asMoney, asOptionalMoney, asText } from '../validate.js';
 import { instantInMadrid, isQuoteId, priceGrainNote, sharesForLump, type QuoteSource } from '../domain/market.js';
 import { attachQuote, checkAlerts, marketFor, marketSkinMoves, priceAt, saveAlert, searchMarket, unlinkQuote } from '../services/market.js';
 import { itemStory } from '../services/story.js';
-import { rankForSkin, searchSkins } from '../services/skins.js';
+import { rankForSkin, searchSkins, worthNear } from '../services/skins.js';
+import { isSkinMarketName, skinBaseName } from '../domain/skins.js';
 import { remindDuePayments } from '../services/plan-reminders.js';
 
 const router = Router();
@@ -137,6 +138,27 @@ router.post(
 );
 
 router.post(
+  '/skin-worth',
+  asyncRoute(async (req, res) => {
+    const marketName = skinBaseName(asText(req.body?.marketName, 'La skin', 100));
+    if (!isSkinMarketName(marketName)) throw new HttpError(400, 'Esa skin no es válida.');
+    const floatValue = Number(req.body?.float);
+    if (!(floatValue >= 0 && floatValue <= 1)) throw new HttpError(400, 'Escribe el float, aunque sea aproximado.');
+    const paintText = req.body?.paint == null ? '' : String(req.body.paint);
+    const paintIndex = /^\d{1,4}$/.test(paintText) ? Number(paintText) : null;
+    const at = madridInstant(req.body?.at);
+    let worth;
+    try {
+      worth = await worthNear(marketName, floatValue, paintIndex, at);
+    } catch {
+      throw new HttpError(502, 'El precio de esa hora no ha respondido. Puedes escribir tú lo que valía.');
+    }
+    if (!worth) throw new HttpError(404, 'No hay ventas cercanas a esa hora. Puedes escribir tú lo que valía.');
+    res.json(worth);
+  }),
+);
+
+router.post(
   '/link',
   asyncRoute(async (req, res) => {
     const userId = owner(req as AuthRequest);
@@ -189,6 +211,7 @@ router.get(
     res.json({
       notifications: notifications.map((item) => ({
         id: String(item._id),
+        quoteKey: item.quoteKey,
         title: item.title,
         body: item.body,
         direction: item.direction,

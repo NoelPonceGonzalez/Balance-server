@@ -102,6 +102,31 @@ export async function pricedHistory(marketHashName: string, paintIndex: number |
   }
 }
 
+/** Lo que valía una skin cerca de una hora, con ventas reales de alrededor. */
+export async function worthNear(marketName: string, floatValue: number, paintIndex: number | null, at: Date): Promise<{ eur: number; note: string } | null> {
+  const name = skinBaseName(marketName);
+  if (!isSkinMarketName(name) || !(floatValue >= 0 && floatValue <= 1)) return null;
+  const sales = await pricedHistory(name, paintIndex);
+  const target = at.getTime();
+  if (!Number.isFinite(target) || !sales.length) return null;
+  const windows = [3, 14, 90];
+  for (const days of windows) {
+    const span = days * 86_400_000;
+    const width = days === 90 ? 1 : floatValue < 0.07 ? 0.01 : floatValue < 0.15 ? 0.02 : 0.05;
+    const near = sales.filter((sale) => {
+      const when = Date.parse(sale.at);
+      if (!Number.isFinite(when) || Math.abs(when - target) > span) return false;
+      if (sale.floatValue == null) return true;
+      return Math.abs(sale.floatValue - floatValue) <= width;
+    });
+    const eur = medianEur(near);
+    if (eur != null && near.length >= 2) {
+      return { eur, note: `Mediana de ${near.length} ventas cercanas a esa hora.` };
+    }
+  }
+  return null;
+}
+
 export function medianEur(sales: PricedSale[]): number | null {
   const clean = sales.filter((sale) => sale.stickers === 0).map((sale) => sale.eur);
   const values = clean.length >= 2 ? clean : sales.map((sale) => sale.eur);
