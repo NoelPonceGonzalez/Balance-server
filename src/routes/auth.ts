@@ -4,6 +4,7 @@ import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { config } from '../config/env.js';
 import { User } from '../models/User.js';
+import { deleteUserData } from '../services/delete-user.js';
 import { authenticateToken, signToken, type AuthRequest } from '../middleware/auth.js';
 import { asyncRoute, rateLimit } from '../http.js';
 import { HttpError } from '../http.js';
@@ -11,6 +12,15 @@ import { mailEnabled, sendPasswordCode } from '../services/mail.js';
 import { asText } from '../validate.js';
 
 const router = Router();
+const UNKNOWN_PASSWORD_HASH = '$2a$12$Cnk5gueVsxDACTu16JeTWeqXoOM6vpckNWiBUm8m07sCpLTZqJwfC';
+
+function attemptKey(field: 'login' | 'email') {
+  return (req: { body?: Record<string, unknown> }) => {
+    const raw = field === 'login' ? (req.body?.login ?? req.body?.email) : req.body?.email;
+    const value = typeof raw === 'string' ? raw.trim().toLowerCase().slice(0, 160) : '';
+    return `${field}:${value || 'vacio'}`;
+  };
+}
 
 function publicUser(user: { _id: unknown; name: string; username?: string | null; email: string; theme?: string; timezone?: string }) {
   return {
@@ -46,7 +56,7 @@ async function userFromBearer(req: AuthRequest) {
   const token = header?.startsWith('Bearer ') ? header.slice(7) : '';
   if (!token) return null;
   try {
-    const payload = jwt.verify(token, config.jwtSecret) as { userId?: string };
+    const payload = jwt.verify(token, config.jwtSecret, { algorithms: ['HS256'] }) as { userId?: string };
     if (!payload.userId) return null;
     return User.findById(payload.userId);
   } catch {
@@ -56,7 +66,7 @@ async function userFromBearer(req: AuthRequest) {
 
 router.post(
   '/register',
-  rateLimit(8, 15 * 60 * 1000),
+  rateLimit(4, 60 * 60 * 1000, attemptKey('email')),
   asyncRoute(async (req, res) => {
     const name = asText(req.body?.name, 'El nombre', 80);
     const email = asText(req.body?.email, 'El correo', 160).toLowerCase();
@@ -75,12 +85,12 @@ router.post(
 
 router.post(
   '/login',
-  rateLimit(12, 15 * 60 * 1000),
+  rateLimit(8, 15 * 60 * 1000, attemptKey('login')),
   asyncRoute(async (req, res) => {
     const login = asText(req.body?.login ?? req.body?.email, 'El correo o el usuario', 160).toLowerCase();
     const password = asText(req.body?.password, 'La contraseña', 200);
     const user = await User.findOne({ $or: [{ email: login }, { username: login }] });
-    const matches = user ? await bcrypt.compare(password, user.passwordHash) : false;
+    const matches = await bcrypt.compare(password, user?.passwordHash || UNKNOWN_PASSWORD_HASH);
     if (!user || !matches) throw new HttpError(401, 'Usuario o contraseña incorrectos.');
     res.json({ token: signToken(String(user._id), user.email, user.sessionVersion ?? 0), user: publicUser(user) });
   }),
@@ -98,7 +108,7 @@ router.get(
 
 router.post(
   '/password/code',
-  rateLimit(5, 15 * 60 * 1000),
+  rateLimit(5, 15 * 60 * 1000, attemptKey('email')),
   asyncRoute(async (req, res) => {
     if (!mailEnabled()) throw new HttpError(503, 'El envío de correo no está configurado en el servidor.');
     const sessionUser = await userFromBearer(req as AuthRequest);
@@ -126,7 +136,7 @@ router.post(
 
 router.post(
   '/password/confirm',
-  rateLimit(12, 15 * 60 * 1000),
+  rateLimit(8, 15 * 60 * 1000, attemptKey('email')),
   asyncRoute(async (req, res) => {
     const email = asText(req.body?.email, 'El correo', 160).toLowerCase();
     const code = asText(req.body?.code, 'El código', 8).replace(/\s/g, '');
@@ -150,6 +160,20 @@ router.post(
     user.resetCodeTries = 0;
     await user.save();
     res.json({ token: signToken(String(user._id), user.email, user.sessionVersion), user: publicUser(user) });
+  }),
+);
+
+router.delete(
+  '/me',
+  authenticateToken,
+  asyncRoute(async (req, res) => {
+    if (req.body?.confirm !== 'borrar') throw new HttpError(400, 'Para borrar la cuenta hay que confirmarlo.');
+    const userId = (req as AuthRequest).userId;
+    if (!userId) throw new HttpError(401, 'La sesión no es válida.');
+    const user = await User.findById(userId).select('_id');
+    if (!user) throw new HttpError(401, 'La sesión no es válida.');
+    await deleteUserData(userId);
+    res.json({ ok: true });
   }),
 );
 

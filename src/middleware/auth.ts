@@ -16,7 +16,7 @@ export const authenticateToken = (req: AuthRequest, res: Response, next: NextFun
     res.status(401).json({ error: 'Tienes que iniciar sesión.' });
     return;
   }
-  jwt.verify(token, config.jwtSecret, (err, decoded) => {
+  jwt.verify(token, config.jwtSecret, { algorithms: ['HS256'] }, (err, decoded) => {
     void (async () => {
       if (err) {
         res.status(403).json({ error: 'La sesión ha caducado. Vuelve a entrar.' });
@@ -43,5 +43,5 @@ export const authenticateToken = (req: AuthRequest, res: Response, next: NextFun
 };
 
 export function signToken(userId: string, email: string, sv = 0): string {
-  return jwt.sign({ userId, email, sv }, config.jwtSecret, { expiresIn: '365d' });
+  return jwt.sign({ userId, email, sv }, config.jwtSecret, { expiresIn: '365d', algorithm: 'HS256' });
 }

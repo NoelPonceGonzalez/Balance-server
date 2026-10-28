@@ -18,6 +18,16 @@ import walletRoutes from './routes/wallets.js';
 import { startMarketLoop } from './services/market.js';
 
 const app = express();
+app.set('trust proxy', 1);
+app.disable('x-powered-by');
+
+app.use((_req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=()');
+  next();
+});
 
 app.use(
   cors({
@@ -34,6 +44,7 @@ app.get('/health', (_req, res) => {
 });
 
 app.use('/api', (_req, res, next) => {
+  res.setHeader('Cache-Control', 'no-store');
   if (isDbConnected()) return next();
   return res.status(503).json({ error: 'La base de datos no está conectada. Inténtalo de nuevo en unos segundos.' });
 });

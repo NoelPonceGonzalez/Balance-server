@@ -45,7 +45,9 @@ export function isCorsOriginAllowed(origin: string | undefined): boolean {
   if (getCorsAllowedOrigins().includes(origin)) return true;
   try {
     const url = new URL(origin);
-    return url.protocol === 'https:' && (url.hostname === 'vercel.app' || url.hostname.endsWith('.vercel.app'));
+    if (url.protocol !== 'https:') return false;
+    const host = url.hostname;
+    return host === 'balance-client.vercel.app' || /^balance-client(?:-[a-z0-9-]+)?\.vercel\.app$/.test(host);
   } catch {
     return false;
   }
