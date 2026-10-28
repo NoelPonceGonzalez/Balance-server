@@ -47,7 +47,8 @@ router.get(
   asyncRoute(async (req, res) => {
     const accountId = typeof req.query.accountId === 'string' ? req.query.accountId : '';
     const group = asText(req.query.group, 'El apartado', 40);
-    const points = await walletSeries(owner(req as AuthRequest), accountId, group);
+    const holdingId = typeof req.query.holdingId === 'string' ? req.query.holdingId : '';
+    const points = await walletSeries(owner(req as AuthRequest), accountId, group, holdingId);
     res.json({ points });
   }),
 );

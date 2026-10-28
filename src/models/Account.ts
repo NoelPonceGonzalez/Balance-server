@@ -13,6 +13,8 @@ const AccountSchema = new mongoose.Schema(
     notes: { type: String, default: '', maxlength: 2000 },
     publicAddress: { type: String, default: '', maxlength: 200 },
     archived: { type: Boolean, default: false },
+    /** Apartados que la persona ha activado aunque aún estén vacíos. */
+    sections: { type: [String], default: [] },
     balanceUpdatedAt: { type: Date, default: () => new Date() },
   },
   { timestamps: true },

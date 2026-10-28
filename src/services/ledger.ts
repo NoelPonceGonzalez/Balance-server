@@ -338,6 +338,7 @@ interface AccountPartRow {
   label: string;
   eur: number;
   group: string;
+  section?: string;
   costEur: number | null;
   detail: string;
   image: string | null;
@@ -356,6 +357,7 @@ function accountParts(
     accountId: unknown;
     name?: string;
     assetClass: string;
+    section?: string | null;
     quantity: number;
     unitMarketValue?: number | null;
     currency: string;
@@ -388,7 +390,8 @@ function accountParts(
     if (eur == null) continue;
     const group = PART_GROUP[holding.assetClass] || 'other';
     const label = holding.name || 'Activo';
-    const key = `${group}:${label}`;
+    const section = holding.section || '';
+    const key = `${group}:${section}:${label}`;
     const cost = costInEur(holding);
     const image = httpsImage(holding.quoteImage);
     const moves = (holding.buys || []).flatMap((buy) => {
@@ -410,6 +413,7 @@ function accountParts(
         label,
         eur: roundMoney(eur),
         group,
+        section,
         costEur: cost,
         detail: floatDetail(holding.notes),
         image,
@@ -690,6 +694,7 @@ export async function getDashboard(userId: string, period: string) {
       updatedAt: updated ? new Date(updated).toISOString() : null,
       stale: updated ? Date.now() - new Date(updated).getTime() > STALE_MS : false,
       parts: accountParts(shown, holdings, valueEur),
+      sections: (account as { sections?: string[] }).sections || [],
       planId: marked?.planId || null,
       flows: marked?.flows || [],
       fixed: marked?.fixed || [],

@@ -20,6 +20,18 @@ export function asText(value: unknown, field: string, max: number, required = tr
   return text;
 }
 
+export function asSection(value: unknown): string {
+  if (value == null || value === '') return '';
+  if (typeof value !== 'string' || !/^[a-z0-9_]{1,40}$/.test(value.trim())) throw new HttpError(400, 'Ese apartado no es válido.');
+  return value.trim();
+}
+
+export function asSections(value: unknown): string[] {
+  if (!Array.isArray(value)) throw new HttpError(400, 'Los apartados no son válidos.');
+  if (value.length > 30) throw new HttpError(400, 'Hay demasiados apartados.');
+  return [...new Set(value.map(asSection).filter(Boolean))];
+}
+
 export function asMoney(value: unknown, field: string, allowZero = false): number {
   const number = typeof value === 'number' ? value : typeof value === 'string' && value.trim() ? Number(value) : NaN;
   if (!Number.isFinite(number)) throw new HttpError(400, `${field} tiene que ser un número.`);

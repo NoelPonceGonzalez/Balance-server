@@ -66,7 +66,7 @@ async function pool<T, R>(items: T[], size: number, fn: (item: T) => Promise<R>)
   return out;
 }
 
-async function build(userId: string, accountId: string, group: string): Promise<SeriesPoint[]> {
+async function build(userId: string, accountId: string, group: string, holdingId = ''): Promise<SeriesPoint[]> {
   const today = todayKey('Europe/Madrid');
   if (group === 'extras') {
     const extras = await Extra.find({ userId }).sort({ createdAt: 1 }).lean();
@@ -83,9 +83,10 @@ async function build(userId: string, accountId: string, group: string): Promise<
   if (!/^[a-f0-9]{24}$/i.test(accountId)) return [];
   const account = await Account.findOne({ _id: accountId, userId }).lean();
   if (!account) return [];
-  const classes = group === 'crypto' ? ['crypto'] : group === 'valores' ? ['etf', 'stock'] : group === 'personal_good' ? ['personal_good'] : [];
+  const classes = group === 'crypto' ? ['crypto'] : group === 'valores' ? ['etf', 'stock'] : group === 'personal_good' ? ['personal_good'] : group === 'all' ? ['crypto', 'etf', 'stock', 'personal_good', 'other'] : [];
   if (!classes.length) return [];
-  const holdings = await Holding.find({ userId, accountId: account._id, assetClass: { $in: classes }, quantity: { $gt: 0 } }).lean();
+  const found = await Holding.find({ userId, accountId: account._id, assetClass: { $in: classes }, quantity: { $gt: 0 } }).lean();
+  const holdings = /^[a-f0-9]{24}$/i.test(holdingId) ? found.filter((item) => String(item._id) === holdingId) : found;
   const opened = holdings.reduce<Date | null>((oldest, item) => {
     const created = item.createdAt ? new Date(item.createdAt) : null;
     if (!created) return oldest;
@@ -117,11 +118,11 @@ async function build(userId: string, accountId: string, group: string): Promise<
   return combineSeries(lines.filter((line) => line.current > 0), today);
 }
 
-export async function walletSeries(userId: string, accountId: string, group: string): Promise<SeriesPoint[]> {
-  const key = `${userId}|${accountId}|${group}`;
+export async function walletSeries(userId: string, accountId: string, group: string, holdingId = ''): Promise<SeriesPoint[]> {
+  const key = `${userId}|${accountId}|${group}|${holdingId}`;
   const hit = cache.get(key);
   if (hit && Date.now() - hit.at < (hit.points.length >= 2 ? 10 : 1) * 60_000) return hit.points;
-  const points = await build(userId, accountId, group);
+  const points = await build(userId, accountId, group, holdingId);
   cache.set(key, { at: Date.now(), points });
   return points;
 }

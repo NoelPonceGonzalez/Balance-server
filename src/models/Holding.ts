@@ -7,6 +7,7 @@ const HoldingSchema = new mongoose.Schema(
     name: { type: String, required: true, trim: true, maxlength: 80 },
     symbol: { type: String, default: '', trim: true, maxlength: 20 },
     assetClass: { type: String, enum: ['crypto', 'stock', 'etf', 'personal_good', 'other'], required: true },
+    section: { type: String, default: '', trim: true, maxlength: 40 },
     currency: { type: String, required: true, uppercase: true, trim: true, maxlength: 8 },
     quantity: { type: Number, required: true },
     unitMarketValue: { type: Number, default: null },

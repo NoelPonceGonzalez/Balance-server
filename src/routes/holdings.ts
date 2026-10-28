@@ -3,7 +3,7 @@ import { Account } from '../models/Account.js';
 import { Holding } from '../models/Holding.js';
 import { authenticateToken, type AuthRequest } from '../middleware/auth.js';
 import { asyncRoute, HttpError } from '../http.js';
-import { asClass, asCurrency, asId, asMoney, asOptionalMoney, asRate, asText } from '../validate.js';
+import { asClass, asCurrency, asId, asMoney, asOptionalMoney, asRate, asSection, asText } from '../validate.js';
 import { roundMoney } from '../domain/finance.js';
 import { recordSnapshot } from '../services/ledger.js';
 import { attachQuote, priceAt } from '../services/market.js';
@@ -86,6 +86,7 @@ router.post(
       buys: buy ? [buy] : [],
       eurPerUnit: asRate(req.body?.eurPerUnit, currency),
       notes: asText(req.body?.notes, 'Las notas', 2000, false),
+      section: asSection(req.body?.section),
       followMarket: false,
       priceSource: 'manual',
     });
@@ -140,6 +141,7 @@ router.patch(
     }
     const buy = await readBuy(req.body?.buy, req.body?.quoteSource || holding.quoteSource, req.body?.quoteId || holding.quoteId);
     if (req.body?.assetClass != null) holding.assetClass = asClass(req.body.assetClass);
+    if (req.body?.section != null) holding.section = asSection(req.body.section);
     if (req.body?.currency != null) holding.currency = asCurrency(req.body.currency);
     if (buy) {
       holding.quantity = roundMoney(holding.quantity + buy.quantity, 8);

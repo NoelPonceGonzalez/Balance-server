@@ -4,7 +4,7 @@ import { Holding } from '../models/Holding.js';
 import { Movement } from '../models/Movement.js';
 import { authenticateToken, type AuthRequest } from '../middleware/auth.js';
 import { asyncRoute, HttpError } from '../http.js';
-import { asClass, asCurrency, asId, asKind, asMoney, asRate, asText, asTracking } from '../validate.js';
+import { asClass, asCurrency, asId, asKind, asMoney, asRate, asSections, asText, asTracking } from '../validate.js';
 import { recordSnapshot } from '../services/ledger.js';
 
 const router = Router();
@@ -116,6 +116,7 @@ router.patch(
     if (req.body?.notes != null) account.notes = asText(req.body.notes, 'Las notas', 2000, false);
     if (req.body?.publicAddress != null) account.publicAddress = asText(req.body.publicAddress, 'La dirección', 200, false);
     if (req.body?.archived != null) account.archived = Boolean(req.body.archived);
+    if (req.body?.sections != null) account.sections = asSections(req.body.sections);
     await account.save();
     await recordSnapshot(owner(req as AuthRequest));
     res.json({ account });
