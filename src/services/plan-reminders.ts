@@ -1,7 +1,23 @@
-import { addDays, todayKey } from '../domain/finance.js';
+import { addDays, forecastReached, todayKey } from '../domain/finance.js';
 import { Notification } from '../models/Notification.js';
 import { Plan } from '../models/Plan.js';
 import { User } from '../models/User.js';
+
+async function finishedPlanIds(userId: string): Promise<Set<string>> {
+  const { forecastPlanList } = await import('./ledger.js');
+  const plans = await Plan.find({ userId });
+  const rows = await forecastPlanList(userId, plans);
+  const ids = new Set<string>();
+  for (const row of rows) {
+    if (row.plan.kind === 'gastos') continue;
+    if (forecastReached(row.forecast, row.plan.openingBalance, row.plan.targetAmount)) ids.add(String(row.plan._id));
+  }
+  return ids;
+}
+
+async function clearFinishedDues(userId: string, planId: string): Promise<void> {
+  await Notification.deleteMany({ userId, quoteKey: { $regex: `^plan-due:${planId}:` } });
+}
 
 function daysBetween(from: string, to: string): number {
   const [ay, am, ad] = from.split('-').map(Number);
@@ -60,7 +76,9 @@ async function runReminders(userId: string): Promise<void> {
   const user = await User.findById(userId).select('timezone');
   const today = todayKey(user?.timezone || 'Europe/Madrid');
   const plans = await Plan.find({ userId });
+  const finished = await finishedPlanIds(userId);
   for (const plan of plans) {
+    if (plan.kind === 'gastos') continue;
     const start = plan.startDate.slice(0, 10);
     let dirty = false;
     for (const expense of plan.plannedExpenses) {
@@ -70,6 +88,7 @@ async function runReminders(userId: string): Promise<void> {
       }
     }
     if (dirty) await plan.save();
+    if (finished.has(String(plan._id))) continue;
     const dues: { key: string; title: string; body: string; direction: 'up' | 'down' | 'due' }[] = [];
     const happened = (key: string, incoming: boolean, amount: number, label: string) => {
       dues.push({
@@ -171,6 +190,42 @@ async function runReminders(userId: string): Promise<void> {
       `${due.planName} · ${euros(due.amount)} · ${dayLabel(due.day)}`,
     );
   }
+  await remindTripPayments(userId);
+}
+
+async function remindTripPayments(userId: string): Promise<void> {
+  const plans = await Plan.find({ kind: 'gastos', tripStatus: 'settling', 'members.userId': userId });
+  const now = Date.now();
+  const money = new Intl.NumberFormat('es-ES', { style: 'currency', currency: 'EUR' });
+  for (const plan of plans) {
+    let dirty = false;
+    for (const row of plan.settlements || []) {
+      if (row.status === 'confirmed') continue;
+      const actor = row.status === 'awaiting_confirmation' ? String(row.toId) : String(row.fromId);
+      if (actor !== userId) continue;
+      const since = new Date(row.statusAt || row.openedAt || now).getTime();
+      const hours = (now - since) / 3_600_000;
+      const otherId = row.status === 'awaiting_confirmation' ? String(row.fromId) : String(row.toId);
+      const other = plan.members.find((item) => String(item.userId) === otherId)?.name || 'alguien';
+      const amount = money.format(row.amount);
+      const stamp = `${row.status}:${String(row.statusAt || row.openedAt || '')}`;
+      if (hours >= 24 && !row.reminded24) {
+        const title = row.status === 'awaiting_confirmation' ? `${other} sigue esperando que confirmes` : `Pago pendiente en ${plan.name}`;
+        const body = row.status === 'awaiting_confirmation' ? `${other} indicó un pago de ${amount}. ¿Te ha llegado?` : `Tienes que pagar ${amount} a ${other}.`;
+        await ensureDue(userId, `trip-remind:${plan._id}:${row._id}:${stamp}:24`, title, body);
+        row.reminded24 = true;
+        dirty = true;
+      }
+      if (hours >= 72 && !row.reminded72) {
+        const title = row.status === 'awaiting_confirmation' ? `Confirma si te ha llegado el pago de ${other}` : `Sigue pendiente el pago a ${other}`;
+        const body = `${plan.name} · ${amount}.`;
+        await ensureDue(userId, `trip-remind:${plan._id}:${row._id}:${stamp}:72`, title, body);
+        row.reminded72 = true;
+        dirty = true;
+      }
+    }
+    if (dirty) await plan.save();
+  }
 }
 
 export interface DuePrompt {
@@ -208,8 +263,13 @@ export async function listDueFixed(userId: string): Promise<DuePrompt[]> {
   const user = await User.findById(userId).select('timezone');
   const today = todayKey(user?.timezone || 'Europe/Madrid');
   const plans = await Plan.find({ userId });
+  const finished = await finishedPlanIds(userId);
   const prompts: DuePrompt[] = [];
   for (const plan of plans) {
+    if (finished.has(String(plan._id))) {
+      await clearFinishedDues(userId, String(plan._id));
+      continue;
+    }
     const start = plan.startDate.slice(0, 10);
     const known = new Set((plan.settled || []).map((item) => item.key));
     const anchor = plan.savingsDay && plan.savingsDay >= 1 && plan.savingsDay <= 31 ? Math.round(plan.savingsDay) : 31;

@@ -79,7 +79,8 @@ async function yahooPoints(symbol: string, days: number): Promise<{ at: number; 
   const result = data.chart?.result?.[0];
   const closes = result?.indicators?.quote?.[0]?.close || [];
   const times = result?.timestamp || [];
-  const rate = await eurPer((result?.meta?.currency || 'USD').toUpperCase());
+  const index = symbol.startsWith('^');
+  const rate = index ? 1 : await eurPer((result?.meta?.currency || 'USD').toUpperCase());
   if (!rate) return [];
   return times.flatMap((stamp, index) => {
     const close = closes[index];
@@ -203,11 +204,12 @@ export async function itemStory(userId: string, input: { kind: string; key: stri
       const move = spanChange(series, span.label);
       return { series, ...move, floats: [], note: `La gráfica y el porcentaje son el mismo tramo: ${span.label}, en euros.` };
     }
-    if ((input.kind === 'etf' || input.kind === 'stock' || input.kind === 'gold') && input.key.startsWith('yahoo:')) {
+    if ((input.kind === 'etf' || input.kind === 'stock' || input.kind === 'gold' || input.kind === 'silver' || input.kind === 'oil' || input.kind === 'copper' || input.kind === 'index') && input.key.startsWith('yahoo:')) {
       const symbol = input.key.slice('yahoo:'.length);
       const series = await cachedSeries(`yahoo:${symbol}:${span.days}`, () => yahooSeries(symbol, span.days));
       const move = spanChange(series, span.label);
-      return { series, ...move, floats: [], note: `La gráfica y el porcentaje son el cierre de cada día: ${span.label}, en euros.` };
+      const unit = input.kind === 'index' ? 'en puntos' : 'en euros';
+      return { series, ...move, floats: [], note: `La gráfica y el porcentaje son el cierre de cada día: ${span.label}, ${unit}.` };
     }
     if (input.kind === 'cs2') {
       const context = await skinContext(userId, input.key, input.name);

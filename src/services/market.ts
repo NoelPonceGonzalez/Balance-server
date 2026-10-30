@@ -34,14 +34,22 @@ const STALE_MS = 3 * 60_000;
 const TRACKED = new Set(['crypto', 'stock', 'etf']);
 const ETF_BOARD = ['VWCE.DE', 'SXR8.DE', 'EUNL.DE', 'QDVE.DE'];
 const STABLES = new Set(['usdt', 'usdc', 'dai', 'fdusd', 'tusd', 'usde', 'usds', 'eurc', 'pyusd']);
-type TapeKind = 'crypto' | 'etf' | 'stock' | 'gold';
+type TapeKind = 'crypto' | 'etf' | 'stock' | 'gold' | 'silver' | 'oil' | 'copper' | 'index';
 type BoardSlot = { key: string; kind: TapeKind };
 const STOCK_BOARD = ['AAPL', 'MSFT', 'NVDA', 'ASML.AS'];
 const GOLD_BOARD = ['GC=F'];
+const SILVER_BOARD = ['SI=F'];
+const OIL_BOARD = ['BZ=F'];
+const COPPER_BOARD = ['HG=F'];
+const INDEX_BOARD = ['^IBEX', '^GDAXI', '^STOXX50E', '^GSPC'];
 let boardSlots: BoardSlot[] = [
   ...ETF_BOARD.map((symbol) => ({ key: quoteKey('yahoo', symbol), kind: 'etf' as const })),
   ...STOCK_BOARD.map((symbol) => ({ key: quoteKey('yahoo', symbol), kind: 'stock' as const })),
   ...GOLD_BOARD.map((symbol) => ({ key: quoteKey('yahoo', symbol), kind: 'gold' as const })),
+  ...SILVER_BOARD.map((symbol) => ({ key: quoteKey('yahoo', symbol), kind: 'silver' as const })),
+  ...OIL_BOARD.map((symbol) => ({ key: quoteKey('yahoo', symbol), kind: 'oil' as const })),
+  ...COPPER_BOARD.map((symbol) => ({ key: quoteKey('yahoo', symbol), kind: 'copper' as const })),
+  ...INDEX_BOARD.map((symbol) => ({ key: quoteKey('yahoo', symbol), kind: 'index' as const })),
 ];
 
 interface GameRow {
@@ -250,7 +258,8 @@ async function fetchListing(symbol: string, fx: Record<string, number>): Promise
   const meta = result?.meta;
   if (!meta?.regularMarketPrice || !Number.isFinite(meta.regularMarketPrice)) return null;
   const currency = (meta.currency || 'USD').toUpperCase();
-  const priceEur = priceInEur(meta.regularMarketPrice, currency, fx);
+  const points = symbol.startsWith('^');
+  const priceEur = points ? meta.regularMarketPrice : priceInEur(meta.regularMarketPrice, currency, fx);
   if (priceEur == null) return null;
   const previous = meta.chartPreviousClose;
   const changePct = previous && previous > 0 ? ((meta.regularMarketPrice - previous) / previous) * 100 : null;
@@ -397,12 +406,14 @@ export async function checkAlerts() {
   for (const alert of alerts) {
     const quote = byKey.get(alert.quoteKey);
     if (!quote || Date.now() - new Date(quote.fetchedAt).getTime() > STALE_MS) continue;
+    if (!alert.userId) continue;
     const userId = String(alert.userId);
     const band = evaluateBand(quote.changePct ?? null, { thresholdPct: alert.thresholdPct, armed: alert.bandArmed });
     alert.bandArmed = band.armed;
     if (band.fire && quote.changePct != null) {
       const verb = band.fire === 'up' ? 'sube' : 'baja';
       await Notification.create({
+        userId,
         quoteKey: quote.key,
         title: `${quote.name} ${verb}`,
         body: `${signedPct(quote.changePct)} en ${quote.changeLabel}. Precio ${money(quote.priceEur)}.`,
@@ -549,6 +560,10 @@ async function refreshBoard(fx: Record<string, number>) {
     ...(await fillListed(ETF_BOARD, 'etf', fx, previous, 'Yahoo Finance no ha devuelto este ETF.')),
     ...(await fillListed(STOCK_BOARD, 'stock', fx, previous, 'Yahoo Finance no ha devuelto esta acción.')),
     ...(await fillListed(GOLD_BOARD, 'gold', fx, previous, 'Yahoo Finance no ha devuelto el oro.')),
+    ...(await fillListed(SILVER_BOARD, 'silver', fx, previous, 'Yahoo Finance no ha devuelto la plata.')),
+    ...(await fillListed(OIL_BOARD, 'oil', fx, previous, 'Yahoo Finance no ha devuelto el petróleo.')),
+    ...(await fillListed(COPPER_BOARD, 'copper', fx, previous, 'Yahoo Finance no ha devuelto el cobre.')),
+    ...(await fillListed(INDEX_BOARD, 'index', fx, previous, 'Yahoo Finance no ha devuelto el índice.')),
   ];
   const next = [...cryptos, ...listed];
   if (next.length) boardSlots = next;
@@ -557,7 +572,7 @@ async function refreshBoard(fx: Record<string, number>) {
 
 async function fillListed(
   symbols: string[],
-  kind: 'etf' | 'stock' | 'gold',
+  kind: 'etf' | 'stock' | 'gold' | 'silver' | 'oil' | 'copper' | 'index',
   fx: Record<string, number>,
   previous: Map<string, BoardSlot>,
   missing: string,
@@ -782,6 +797,10 @@ export async function marketFor(userId: string) {
     etfs: tape('etf'),
     stocks: tape('stock'),
     gold: tape('gold'),
+    silver: tape('silver'),
+    oil: tape('oil'),
+    copper: tape('copper'),
+    indices: tape('index'),
     cs2: cs2Tape(holdings, names).map(({ hashName: _hash, paintIndex: _paint, ...rest }) => rest),
     tf2: gameTape('tf2'),
     icons: {

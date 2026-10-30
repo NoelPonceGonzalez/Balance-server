@@ -926,6 +926,20 @@ export function planMonths(plan: SavingsPlanInput, today = todayKey()): PlanMont
   return views;
 }
 
+/** El plan ya llegó al objetivo, con la misma regla que el «Completado» de la lista. */
+export function forecastReached(forecast: { today: string; months: PlanMonthView[] }, opening: number, target: number): boolean {
+  if (!(target > 0)) return false;
+  const start = forecast.months[0]?.lines[0]?.balance ?? opening;
+  if (start >= target) return true;
+  for (const month of forecast.months) {
+    for (const line of month.lines) {
+      if (!line.day || !(line.day <= forecast.today || line.paid)) continue;
+      if (line.balance >= target) return true;
+    }
+  }
+  return false;
+}
+
 /** Saldo del plan con lo ya marcado, aunque la fecha del apunte sea posterior a hoy. */
 export function balanceMarked(months: PlanMonthView[], day: string, opening: number): number {
   let balance = opening;

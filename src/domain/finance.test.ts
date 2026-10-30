@@ -7,6 +7,7 @@ import {
   applyMovementToBooks,
   assertNoSecret,
   forecastPlan,
+  forecastReached,
   planMonths,
   type SavingsPlanInput,
   movementFingerprint,
@@ -496,5 +497,27 @@ describe('planes de ahorro', () => {
 
   it('avanza los días sin salirse del calendario', () => {
     assert.equal(addDays('2026-01-31', 1), '2026-02-01');
+  });
+
+  it('un plan cumplido deja de contar como pendiente', () => {
+    const months = [{
+      month: '2026-06',
+      title: 'jun 2026',
+      lines: [
+        { label: 'Saldo actual', tone: 'plain' as const, amount: null, balance: 1000 },
+        { label: 'Ahorro', tone: 'in' as const, amount: 500, balance: 1500, day: '2026-06-28', paid: true },
+      ],
+    }];
+    assert.equal(forecastReached({ today: '2026-10-29', months }, 1000, 1500), true);
+    assert.equal(forecastReached({ today: '2026-10-29', months }, 1000, 2000), false);
+    const ahead = [{
+      month: '2026-12',
+      title: 'dic 2026',
+      lines: [
+        { label: 'Saldo actual', tone: 'plain' as const, amount: null, balance: 100 },
+        { label: 'Meta', tone: 'in' as const, amount: 5000, balance: 5100, day: '2026-12-01' },
+      ],
+    }];
+    assert.equal(forecastReached({ today: '2026-10-29', months: ahead }, 100, 5000), false);
   });
 });

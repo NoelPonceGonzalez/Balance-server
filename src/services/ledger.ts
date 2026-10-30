@@ -857,6 +857,28 @@ export async function forecastForPlan(
   userId: string,
   shared?: { timezone: string; books: Books | null },
 ) {
+  if (plan.kind === 'gastos') {
+    const timezone = shared?.timezone || (await User.findById(userId).select('timezone'))?.timezone || 'Europe/Madrid';
+    return {
+      plannedToday: 0,
+      plannedWithExpectedToday: 0,
+      balanceYesterday: 0,
+      today: todayKey(timezone),
+      realBalance: null,
+      anchor: null,
+      deviationEur: 0,
+      compliancePct: null,
+      onTrack: true,
+      estimatedDate: null,
+      extraMonths: null,
+      extraMonthlyToRecover: null,
+      gapAtTarget: 0,
+      series: [],
+      months: [],
+      scenarios: [],
+      notes: [],
+    };
+  }
   const timezone = shared?.timezone || (await User.findById(userId).select('timezone'))?.timezone || 'Europe/Madrid';
   const today = todayKey(timezone);
   let real: number | null = plan.manualRealBalance ?? null;

@@ -6,6 +6,7 @@ import { asyncRoute, HttpError } from '../http.js';
 import { asId, asMoney, asOptionalMoney, asText } from '../validate.js';
 import { instantInMadrid, isQuoteId, priceGrainNote, sharesForLump, type QuoteSource } from '../domain/market.js';
 import { attachQuote, checkAlerts, marketFor, marketSkinMoves, priceAt, saveAlert, searchMarket, unlinkQuote } from '../services/market.js';
+import { currencyBoard } from '../services/fx.js';
 import { itemStory } from '../services/story.js';
 import { rankForSkin, searchSkins, worthNear } from '../services/skins.js';
 import { isSkinMarketName, skinBaseName } from '../domain/skins.js';
@@ -35,6 +36,13 @@ router.get(
   '/',
   asyncRoute(async (req, res) => {
     res.json(await marketFor(owner(req as AuthRequest)));
+  }),
+);
+
+router.get(
+  '/fx',
+  asyncRoute(async (_req, res) => {
+    res.json(await currencyBoard());
   }),
 );
 

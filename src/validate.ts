@@ -44,6 +44,22 @@ export function asOptionalMoney(value: unknown, field: string): number | null {
   return asMoney(value, field, true);
 }
 
+export function asReceipt(value: unknown, required = false): string {
+  if (value == null || value === '') {
+    if (required) throw new HttpError(400, 'Falta la foto del tique.');
+    return '';
+  }
+  if (typeof value !== 'string') throw new HttpError(400, 'La foto no es válida.');
+  const text = value.trim();
+  if (!text) {
+    if (required) throw new HttpError(400, 'Falta la foto del tique.');
+    return '';
+  }
+  if (text.length > 500_000) throw new HttpError(400, 'La foto pesa demasiado.');
+  if (!/^data:image\/jpeg;base64,[A-Za-z0-9+/=]+$/.test(text)) throw new HttpError(400, 'La foto tiene que ser una imagen.');
+  return text;
+}
+
 export function asPicture(value: unknown): string {
   if (value == null || value === '') return '';
   const text = asText(value, 'La imagen', 500, false);

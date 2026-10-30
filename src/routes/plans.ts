@@ -1,13 +1,15 @@
+import { randomBytes } from 'node:crypto';
 import { Router } from 'express';
 import { Plan } from '../models/Plan.js';
+import { netsAfterConfirmed, splitTrip, transfersOf } from '../domain/split.js';
 import { Account } from '../models/Account.js';
 import { User } from '../models/User.js';
 import { Notification } from '../models/Notification.js';
 import { authenticateToken, type AuthRequest } from '../middleware/auth.js';
 import { asyncRoute, HttpError } from '../http.js';
-import { asDay, asId, asMoney, asOptionalMoney, asPicture, asText } from '../validate.js';
+import { asDay, asId, asMoney, asOptionalMoney, asPicture, asReceipt, asText } from '../validate.js';
 import { roundMoney, todayKey } from '../domain/finance.js';
-import { forecastForPlan, forecastPlanList } from '../services/ledger.js';
+import { createMovement, deleteMovement, forecastForPlan, forecastPlanList } from '../services/ledger.js';
 import { listDueFixed, remindDuePayments } from '../services/plan-reminders.js';
 
 const router = Router();
@@ -15,6 +17,75 @@ router.use(authenticateToken);
 
 function owner(req: AuthRequest) {
   return req.userId as string;
+}
+
+const PERSON_COLORS = ['#ea580c', '#2563eb', '#16a34a', '#db2777', '#7c3aed', '#0891b2', '#ca8a04', '#e11d48', '#4f46e5', '#0f766e'];
+
+function joinCodeOk(code: string): boolean {
+  return /^[A-Za-z0-9_-]{8,24}$/.test(code);
+}
+
+function splitOf(plan: {
+  members?: { userId: unknown; name: string; color: string; contributed?: number }[];
+  tripExpenses?: { paidBy: unknown; amount: number; splitAmong?: unknown[] }[];
+  settlements?: { status?: string; fromId: unknown; toId: unknown; amount: number }[];
+}) {
+  const live = splitTrip(
+    (plan.members || []).map((member) => ({
+      id: String(member.userId),
+      name: member.name,
+      color: member.color,
+      contributed: member.contributed || 0,
+    })),
+    (plan.tripExpenses || []).map((expense) => ({
+      paidBy: String(expense.paidBy),
+      amount: expense.amount,
+      splitAmong: (expense.splitAmong || []).map((id) => String(id)),
+    })),
+  );
+  const confirmed = (plan.settlements || []).filter((row) => row.status === 'confirmed');
+  if (confirmed.length === 0) return live;
+  const people = netsAfterConfirmed(live.people, confirmed.map((row) => ({
+    fromId: String(row.fromId),
+    toId: String(row.toId),
+    amount: row.amount,
+  })));
+  return { ...live, people, transfers: transfersOf(people) };
+}
+
+function tripPhase(plan: { tripStatus?: string }): 'active' | 'settling' | 'done' {
+  if (plan.tripStatus === 'settling' || plan.tripStatus === 'done') return plan.tripStatus;
+  return 'active';
+}
+
+function assertOpen(plan: { tripStatus?: string }) {
+  if (tripPhase(plan) !== 'active') throw new HttpError(400, 'El reparto está cerrado. El creador puede reabrirlo para corregir un gasto.');
+}
+
+const EXPENSE_KINDS = ['Comida', 'Transporte', 'Casa', 'Ocio', 'Otro'];
+
+function expenseKind(value: unknown): string {
+  return typeof value === 'string' && EXPENSE_KINDS.includes(value) ? value : '';
+}
+
+function expenseAmong(plan: { members: { userId: unknown }[] }, value: unknown): string[] {
+  if (!Array.isArray(value) || value.length === 0) return [];
+  const ids = value.map((id) => memberId(plan, id, 'Quién entra en el gasto'));
+  const unique = [...new Set(ids)];
+  if (unique.length >= plan.members.length) return [];
+  return unique;
+}
+
+async function loadTrip(userId: string, id: string) {
+  const plan = await Plan.findOne({
+    _id: asId(id, 'El plan'),
+    kind: 'gastos',
+    $or: [{ userId }, { 'members.userId': userId }],
+  });
+  if (!plan) throw new HttpError(404, 'Ese reparto no está.');
+  if (!plan.settlements) plan.set('settlements', []);
+  if (!plan.tripActivity) plan.set('tripActivity', []);
+  return plan;
 }
 
 function optionalId(value: unknown): string | undefined {
@@ -108,12 +179,21 @@ router.get(
   '/',
   asyncRoute(async (req, res) => {
     const userId = owner(req as AuthRequest);
-    const plansPromise = Plan.find({ userId }).sort({ createdAt: -1 });
+    const plansPromise = Plan.find({ $or: [{ userId }, { 'members.userId': userId }] }).sort({ createdAt: -1 });
     const remindPromise = remindDuePayments(userId);
     const plans = await plansPromise;
     const withForecast = await forecastPlanList(userId, plans);
     await remindPromise;
-    res.json({ plans: withForecast });
+    res.json({
+      plans: withForecast.map((row) => {
+        const plan = hideReceipts(row.plan);
+        return {
+          plan,
+          forecast: row.forecast,
+          ...(row.plan.kind === 'gastos' ? { split: splitOf(row.plan) } : {}),
+        };
+      }),
+    });
   }),
 );
 
@@ -206,7 +286,33 @@ router.post(
   '/',
   asyncRoute(async (req, res) => {
     const userId = owner(req as AuthRequest);
-    const plan = await Plan.create({ userId, ...readPlan(req.body || {}) });
+    const body = (req.body || {}) as Record<string, unknown>;
+    if (body.kind === 'gastos') {
+      const user = await User.findById(userId).select('name timezone');
+      const day = todayKey(user?.timezone || 'Europe/Madrid');
+      const plan = await Plan.create({
+        userId,
+        name: asText(body.name, 'El nombre', 80),
+        kind: 'gastos',
+        joinCode: randomBytes(9).toString('base64url'),
+        members: [{
+          userId,
+          name: (user?.name || 'Tú').slice(0, 80),
+          color: PERSON_COLORS[0],
+          contributed: asMoney(body.contributed ?? 0, 'Lo aportado', true),
+        }],
+        tripExpenses: [],
+        openingBalance: 0,
+        startDate: day,
+        targetAmount: 0,
+        targetDate: day,
+        monthlySavings: 0,
+        linkedAccountIds: [],
+      });
+      res.status(201).json({ plan, forecast: await forecastForPlan(plan, userId), split: splitOf(plan) });
+      return;
+    }
+    const plan = await Plan.create({ userId, ...readPlan(body) });
     await remindDuePayments(userId);
     const forecast = await forecastForPlan(plan, userId);
     res.status(201).json({ plan, forecast });
@@ -217,7 +323,11 @@ router.patch(
   '/:id',
   asyncRoute(async (req, res) => {
     const userId = owner(req as AuthRequest);
-    const plan = await Plan.findOneAndUpdate({ _id: asId(req.params.id, 'El plan'), userId }, readPlan(req.body || {}), {
+    const id = asId(req.params.id, 'El plan');
+    const existing = await Plan.findOne({ _id: id, userId });
+    if (!existing) throw new HttpError(404, 'Ese plan no existe.');
+    if (existing.kind === 'gastos') throw new HttpError(400, 'Este reparto se cambia desde sus gastos.');
+    const plan = await Plan.findOneAndUpdate({ _id: id, userId }, readPlan(req.body || {}), {
       new: true,
     });
     if (!plan) throw new HttpError(404, 'Ese plan no existe.');
@@ -403,11 +513,462 @@ router.post(
   }),
 );
 
+router.get(
+  '/join/:code',
+  asyncRoute(async (req, res) => {
+    const userId = owner(req as AuthRequest);
+    const code = String(req.params.code || '');
+    if (!joinCodeOk(code)) throw new HttpError(400, 'Ese enlace no es válido.');
+    const plan = await Plan.findOne({ joinCode: code, kind: 'gastos' });
+    if (!plan) throw new HttpError(404, 'Ese reparto no está.');
+    const people = plan.members.length;
+    res.json({
+      planId: String(plan._id),
+      name: plan.name,
+      people,
+      joined: plan.members.some((item) => String(item.userId) === userId),
+      full: people >= 10,
+    });
+  }),
+);
+
+router.post(
+  '/join',
+  asyncRoute(async (req, res) => {
+    const userId = owner(req as AuthRequest);
+    const body = (req.body || {}) as Record<string, unknown>;
+    const code = typeof body.code === 'string' ? body.code.trim() : '';
+    if (!joinCodeOk(code)) throw new HttpError(400, 'Ese enlace no es válido.');
+    const plan = await Plan.findOne({ joinCode: code, kind: 'gastos' });
+    if (!plan) throw new HttpError(404, 'Ese reparto no está.');
+    if (plan.members.some((item) => String(item.userId) === userId)) {
+      res.json({ planId: String(plan._id), joined: true });
+      return;
+    }
+    if (plan.members.length >= 10) throw new HttpError(400, 'Ya sois 10, no cabe nadie más.');
+    const user = await User.findById(userId).select('name');
+    const used = new Set(plan.members.map((item) => item.color));
+    const color = PERSON_COLORS.find((item) => !used.has(item)) || PERSON_COLORS[plan.members.length % PERSON_COLORS.length];
+    plan.members.push({
+      userId,
+      name: (user?.name || 'Tú').slice(0, 80),
+      color,
+      contributed: asMoney(body.contributed ?? 0, 'Lo aportado', true),
+    });
+    await plan.save();
+    res.status(201).json({ planId: String(plan._id), joined: true });
+  }),
+);
+
+function memberId(plan: { members: { userId: unknown }[] }, value: unknown, field: string): string {
+  const id = asId(value, field);
+  if (!id || !plan.members.some((item) => String(item.userId) === id)) throw new HttpError(400, 'Esa persona no está en el reparto.');
+  return id;
+}
+
+router.patch(
+  '/:id/pot',
+  asyncRoute(async (req, res) => {
+    const userId = owner(req as AuthRequest);
+    const plan = await loadTrip(userId, String(req.params.id));
+    const body = (req.body || {}) as Record<string, unknown>;
+    const target = body.userId ? memberId(plan, body.userId, 'La persona') : userId;
+    if (target !== userId && String(plan.userId) !== userId) throw new HttpError(403, 'Solo puedes cambiar lo que has puesto tú.');
+    const member = plan.members.find((item) => String(item.userId) === target);
+    if (!member) throw new HttpError(404, 'Esa persona no está en el reparto.');
+    assertOpen(plan);
+    member.contributed = asMoney(body.contributed ?? 0, 'Lo aportado', true);
+    await plan.save();
+    res.json({ ok: true });
+  }),
+);
+
+router.post(
+  '/tique',
+  asyncRoute(async (req, res) => {
+    const userId = owner(req as AuthRequest);
+    const body = (req.body || {}) as Record<string, unknown>;
+    const name = asText(body.name, 'El gasto', 80);
+    const amount = asMoney(body.amount, 'El importe');
+    asReceipt(body.receipt, true);
+    const accountId = asId(body.accountId, 'El banco') as string;
+    await chargeFull(userId, accountId, amount, name);
+    const plans = await Plan.find({ userId, linkedAccountIds: accountId, kind: { $ne: 'gastos' } }).select('name');
+    res.status(201).json({ ok: true, plans: plans.map((plan) => plan.name) });
+  }),
+);
+
+router.post(
+  '/:id/gasto',
+  asyncRoute(async (req, res) => {
+    const userId = owner(req as AuthRequest);
+    const plan = await loadTrip(userId, String(req.params.id));
+    assertOpen(plan);
+    const body = (req.body || {}) as Record<string, unknown>;
+    const user = await User.findById(userId).select('timezone');
+    const paidBy = memberId(plan, body.paidBy, 'Quién lo ha pagado');
+    const payer = plan.members.find((item) => String(item.userId) === paidBy);
+    const name = asText(body.name, 'El gasto', 80);
+    const amount = asMoney(body.amount, 'El importe');
+    const receipt = asReceipt(body.receipt);
+    let charge: 'none' | 'pending' | 'done' = 'none';
+    let chargeAccountId: string | null = null;
+    let chargeMovementId = '';
+    if (receipt) {
+      if (paidBy === userId) {
+        chargeAccountId = asId(body.accountId, 'El banco') as string;
+        chargeMovementId = await chargeFull(userId, chargeAccountId, amount, name);
+        charge = 'done';
+      } else {
+        charge = 'pending';
+      }
+    }
+    plan.tripExpenses.push({
+      name,
+      amount,
+      paidBy,
+      paidByName: payer?.name || '',
+      category: expenseKind(body.category),
+      splitAmong: expenseAmong(plan, body.splitAmong),
+      date: todayKey(user?.timezone || 'Europe/Madrid'),
+      receipt,
+      charge,
+      chargeAccountId,
+      chargeMovementId,
+    });
+    await plan.save();
+    if (charge === 'pending') {
+      await tell(String(plan._id), [paidBy], 'Tique por aceptar', `${name}: ${moneyLabel(amount)}. Cuando entres, confirmas que es tuyo y se resta el 100% de tu banco.`);
+    }
+    res.status(201).json({ ok: true });
+  }),
+);
+
+router.patch(
+  '/:id/gasto/:expenseId',
+  asyncRoute(async (req, res) => {
+    const userId = owner(req as AuthRequest);
+    const plan = await loadTrip(userId, String(req.params.id));
+    assertOpen(plan);
+    const body = (req.body || {}) as Record<string, unknown>;
+    const row = plan.tripExpenses.find((item) => String(item._id) === String(req.params.expenseId || ''));
+    if (!row) throw new HttpError(404, 'Ese gasto no está.');
+    row.name = asText(body.name, 'El gasto', 80);
+    row.amount = asMoney(body.amount, 'El importe');
+    row.paidBy = memberId(plan, body.paidBy, 'Quién lo ha pagado');
+    row.paidByName = plan.members.find((item) => String(item.userId) === String(row.paidBy))?.name || row.paidByName || '';
+    row.set('category', expenseKind(body.category));
+    row.set('splitAmong', expenseAmong(plan, body.splitAmong));
+    await plan.save();
+    res.json({ ok: true });
+  }),
+);
+
+router.delete(
+  '/:id/gasto/:expenseId',
+  asyncRoute(async (req, res) => {
+    const userId = owner(req as AuthRequest);
+    const plan = await loadTrip(userId, String(req.params.id));
+    assertOpen(plan);
+    const row = plan.tripExpenses.find((item) => String(item._id) === String(req.params.expenseId || ''));
+    if (!row) throw new HttpError(404, 'Ese gasto no está.');
+    const movementId = String(row.get('chargeMovementId') || '');
+    if (row.get('charge') === 'done' && movementId) {
+      if (String(row.paidBy) !== userId) throw new HttpError(400, 'Quien pagó el tique es quien puede quitarlo, para devolver el dinero a su banco.');
+      try {
+        await deleteMovement(userId, movementId);
+      } catch (err) {
+        if (!(err instanceof HttpError) || err.status !== 404) throw err;
+      }
+    }
+    plan.tripExpenses.pull(row._id);
+    await plan.save();
+    res.json({ ok: true });
+  }),
+);
+
+router.post(
+  '/:id/gasto/:expenseId/aceptar',
+  asyncRoute(async (req, res) => {
+    const userId = owner(req as AuthRequest);
+    const plan = await loadTrip(userId, String(req.params.id));
+    assertOpen(plan);
+    const row = plan.tripExpenses.find((item) => String(item._id) === String(req.params.expenseId || ''));
+    if (!row) throw new HttpError(404, 'Ese gasto no está.');
+    if (String(row.paidBy) !== userId) throw new HttpError(403, 'Solo quien pagó el tique puede aceptarlo.');
+    if (row.get('charge') !== 'pending') throw new HttpError(400, 'Este tique ya está aplicado.');
+    const accountId = asId((req.body || {}).accountId, 'El banco') as string;
+    const movementId = await chargeFull(userId, accountId, row.amount, row.name);
+    row.set('charge', 'done');
+    row.set('chargeAccountId', accountId);
+    row.set('chargeMovementId', movementId);
+    await plan.save();
+    res.json({ ok: true });
+  }),
+);
+
+async function leaveReparto(plan: Awaited<ReturnType<typeof loadTrip>>, userId: string) {
+  if (tripPhase(plan) !== 'active') throw new HttpError(400, 'Este reparto está en liquidación. El creador puede reabrirlo si hay que corregir algo.');
+  const member = plan.members.find((item) => String(item.userId) === userId);
+  const name = member?.name || 'Alguien';
+  for (const expense of plan.tripExpenses) {
+    if (String(expense.paidBy) === userId) expense.paidByName = name;
+  }
+  const staying = plan.members
+    .filter((item) => String(item.userId) !== userId)
+    .map((item) => ({ userId: item.userId, name: item.name, color: item.color, contributed: item.contributed || 0 }));
+  if (staying.length === 0) {
+    await plan.deleteOne();
+    return;
+  }
+  plan.members.splice(0, plan.members.length);
+  for (const person of staying) plan.members.push(person);
+  if (String(plan.userId) === userId) plan.set('userId', staying[0].userId);
+  if (!plan.tripActivity) plan.set('tripActivity', []);
+  plan.tripActivity.push({
+    at: new Date(),
+    title: `${name} se ha salido`,
+    body: `Ya no está en «${plan.name}».`,
+    kind: 'left',
+    settlementId: null,
+  });
+  await plan.save();
+  const people = await User.find({ _id: { $in: staying.map((item) => item.userId) } }).select('_id');
+  if (people.length === 0) return;
+  await Notification.insertMany(people.map((person) => ({
+    userId: person._id,
+    quoteKey: `reparto:${plan._id}`,
+    title: `${name} se ha salido`,
+    body: `Ya no está en «${plan.name}».`,
+    direction: 'due',
+    changePct: null,
+  })));
+}
+
 router.delete(
   '/:id',
   asyncRoute(async (req, res) => {
-    const deleted = await Plan.findOneAndDelete({ _id: asId(req.params.id, 'El plan'), userId: owner(req as AuthRequest) });
-    if (!deleted) throw new HttpError(404, 'Ese plan no existe.');
+    const userId = owner(req as AuthRequest);
+    const id = asId(req.params.id, 'El plan');
+    const plan = await Plan.findOne({ _id: id, $or: [{ userId }, { 'members.userId': userId }] });
+    if (!plan) throw new HttpError(404, 'Ese plan no existe.');
+    if (plan.kind === 'gastos') {
+      await leaveReparto(plan, userId);
+      res.json({ ok: true });
+      return;
+    }
+    if (String(plan.userId) !== userId) throw new HttpError(404, 'Ese plan no existe.');
+    await plan.deleteOne();
+    res.json({ ok: true });
+  }),
+);
+
+function hideReceipts(plan: { toObject: () => Record<string, unknown> }) {
+  const raw = plan.toObject();
+  const expenses = raw.tripExpenses;
+  if (!Array.isArray(expenses)) return raw;
+  return {
+    ...raw,
+    tripExpenses: expenses.map((expense) => {
+      const row = expense as { charge?: string; receipt?: string };
+      return { ...row, receipt: row.charge === 'pending' ? row.receipt || '' : '' };
+    }),
+  };
+}
+
+async function chargeFull(userId: string, accountId: string, amount: number, name: string): Promise<string> {
+  const account = await Account.findOne({ _id: accountId, userId });
+  if (!account) throw new HttpError(404, 'Ese banco no está.');
+  if (account.archived) throw new HttpError(400, 'Ese banco está archivado.');
+  if (account.currency !== 'EUR') throw new HttpError(400, 'El tique se resta de una cuenta en euros.');
+  const user = await User.findById(userId).select('timezone');
+  const saved = await createMovement(userId, {
+    type: 'expense',
+    date: todayKey(user?.timezone || 'Europe/Madrid'),
+    amount,
+    currency: 'EUR',
+    category: '',
+    description: name,
+    accountId,
+    applyToBalances: true,
+    confirmDuplicate: true,
+  });
+  return saved.id;
+}
+
+function moneyLabel(amount: number): string {
+  return new Intl.NumberFormat('es-ES', { style: 'currency', currency: 'EUR' }).format(amount);
+}
+
+function memberName(plan: { members: { userId: unknown; name: string }[] }, id: string): string {
+  return plan.members.find((item) => String(item.userId) === id)?.name || 'Alguien';
+}
+
+async function tell(planId: string, userIds: string[], title: string, body: string) {
+  const unique = [...new Set(userIds.map(String))].filter((id) => /^[a-f0-9]{24}$/i.test(id));
+  if (unique.length === 0) return;
+  const people = await User.find({ _id: { $in: unique } }).select('_id');
+  if (people.length === 0) return;
+  await Notification.insertMany(people.map((person) => ({
+    userId: person._id,
+    quoteKey: `reparto:${planId}`,
+    title,
+    body,
+    direction: 'due',
+    changePct: null,
+  })));
+}
+
+function logActivity(plan: Awaited<ReturnType<typeof loadTrip>>, title: string, body: string, kind: string, settlementId: unknown = null) {
+  plan.tripActivity.push({ at: new Date(), title, body, kind, settlementId });
+}
+
+router.post(
+  '/:id/cerrar',
+  asyncRoute(async (req, res) => {
+    const userId = owner(req as AuthRequest);
+    const plan = await loadTrip(userId, String(req.params.id));
+    if (String(plan.userId) !== userId) throw new HttpError(403, 'Solo quien creó el reparto puede finalizarlo.');
+    if (tripPhase(plan) !== 'active') throw new HttpError(400, 'Este reparto ya está cerrado.');
+    const fresh = splitOf(plan);
+    const kept = plan.settlements.filter((row) => row.status === 'confirmed');
+    plan.settlements.splice(0, plan.settlements.length, ...kept);
+    const now = new Date();
+    for (const row of fresh.transfers) {
+      plan.settlements.push({
+        fromId: row.fromId,
+        toId: row.toId,
+        amount: row.amount,
+        status: 'pending',
+        openedAt: now,
+        statusAt: now,
+        paymentReportedAt: null,
+        confirmedAt: null,
+        reminded24: false,
+        reminded72: false,
+        events: [{ at: now, userId, action: 'created', note: 'Se ha generado el pago.' }],
+      });
+    }
+    const pending = plan.settlements.filter((row) => row.status !== 'confirmed').length;
+    plan.tripStatus = pending === 0 ? 'done' : 'settling';
+    plan.tripClosedAt = now;
+    const actor = memberName(plan, userId);
+    const body = pending === 0 ? 'Nadie tiene que pagar nada. El reparto queda cerrado.' : pending === 1 ? 'Hay un pago pendiente.' : `Hay ${pending} pagos pendientes.`;
+    logActivity(plan, `${actor} ha finalizado el plan`, body, 'finished');
+    await plan.save();
+    await tell(String(plan._id), plan.members.map((item) => String(item.userId)).filter((id) => id !== userId), `${actor} ha finalizado «${plan.name}»`, body);
+    res.json({ ok: true, status: plan.tripStatus });
+  }),
+);
+
+router.post(
+  '/:id/reabrir',
+  asyncRoute(async (req, res) => {
+    const userId = owner(req as AuthRequest);
+    const plan = await loadTrip(userId, String(req.params.id));
+    if (String(plan.userId) !== userId) throw new HttpError(403, 'Solo quien creó el reparto puede reabrirlo.');
+    if (tripPhase(plan) === 'active') throw new HttpError(400, 'Este reparto ya está abierto.');
+    const kept = plan.settlements.filter((row) => row.status === 'confirmed');
+    const dropped = plan.settlements.length - kept.length;
+    plan.settlements.splice(0, plan.settlements.length, ...kept);
+    plan.tripStatus = 'active';
+    const actor = memberName(plan, userId);
+    const body = dropped > 0
+      ? 'Los pagos a medias se anulan. Las deudas se vuelven a calcular.'
+      : 'Se pueden corregir los gastos. Las deudas se vuelven a calcular.';
+    logActivity(plan, `${actor} ha reabierto el plan`, body, 'reopened');
+    await plan.save();
+    await tell(String(plan._id), plan.members.map((item) => String(item.userId)).filter((id) => id !== userId), `${actor} ha reabierto «${plan.name}»`, body);
+    res.json({ ok: true });
+  }),
+);
+
+function loadSettlement(plan: Awaited<ReturnType<typeof loadTrip>>, id: string) {
+  const row = plan.settlements.find((item) => String(item._id) === id);
+  if (!row) throw new HttpError(404, 'Esa liquidación no está.');
+  return row;
+}
+
+router.post(
+  '/:id/liquidacion/:sid/pagado',
+  asyncRoute(async (req, res) => {
+    const userId = owner(req as AuthRequest);
+    const plan = await loadTrip(userId, String(req.params.id));
+    if (tripPhase(plan) !== 'settling') throw new HttpError(400, 'El reparto no está en liquidación.');
+    const row = loadSettlement(plan, String(req.params.sid || ''));
+    if (String(row.fromId) !== userId) throw new HttpError(403, 'Solo quien tiene que pagar puede indicarlo.');
+    if (row.status !== 'pending' && row.status !== 'disputed') throw new HttpError(400, 'Este pago no se puede marcar ahora.');
+    const now = new Date();
+    row.status = 'awaiting_confirmation';
+    row.paymentReportedAt = now;
+    row.statusAt = now;
+    row.reminded24 = false;
+    row.reminded72 = false;
+    row.events.push({ at: now, userId, action: 'reported', note: 'Ha indicado que ya ha pagado.' });
+    const actor = memberName(plan, userId);
+    const receiver = memberName(plan, String(row.toId));
+    const amount = moneyLabel(row.amount);
+    logActivity(plan, `${actor} indica que ha pagado`, `${amount} a ${receiver}.`, 'reported', row._id);
+    await plan.save();
+    await tell(String(plan._id), [String(row.toId)], `${actor} indica que te ha pagado ${amount}`, `En «${plan.name}». ¿Has recibido el dinero?`);
+    res.json({ ok: true });
+  }),
+);
+
+router.post(
+  '/:id/liquidacion/:sid/recibido',
+  asyncRoute(async (req, res) => {
+    const userId = owner(req as AuthRequest);
+    const plan = await loadTrip(userId, String(req.params.id));
+    if (tripPhase(plan) !== 'settling') throw new HttpError(400, 'El reparto no está en liquidación.');
+    const row = loadSettlement(plan, String(req.params.sid || ''));
+    if (String(row.toId) !== userId) throw new HttpError(403, 'Solo quien tiene que recibir puede confirmarlo.');
+    if (String(row.fromId) === userId) throw new HttpError(403, 'No puedes confirmar un pago que te haces a ti.');
+    if (row.status !== 'awaiting_confirmation') throw new HttpError(400, 'Todavía no hay un pago que confirmar.');
+    const now = new Date();
+    row.status = 'confirmed';
+    row.confirmedAt = now;
+    row.statusAt = now;
+    row.reminded24 = false;
+    row.reminded72 = false;
+    row.events.push({ at: now, userId, action: 'confirmed', note: 'Ha confirmado que le ha llegado.' });
+    const actor = memberName(plan, userId);
+    const payer = memberName(plan, String(row.fromId));
+    const amount = moneyLabel(row.amount);
+    const closed = plan.settlements.every((item) => item.status === 'confirmed');
+    if (closed) plan.tripStatus = 'done';
+    logActivity(plan, `${actor} ha confirmado el pago`, `${payer} le ha pagado ${amount}.${closed ? ' El reparto está cerrado.' : ''}`, 'confirmed', row._id);
+    await plan.save();
+    await tell(String(plan._id), [String(row.fromId)], `${actor} ha confirmado el pago`, closed ? `${amount} recibidos. El reparto está cerrado.` : `${amount} recibidos.`);
+    if (closed) {
+      const rest = plan.members.map((item) => String(item.userId)).filter((id) => id !== userId && id !== String(row.fromId));
+      await tell(String(plan._id), rest, `«${plan.name}» está cerrado`, 'Todos los pagos están confirmados.');
+    }
+    res.json({ ok: true, status: plan.tripStatus });
+  }),
+);
+
+router.post(
+  '/:id/liquidacion/:sid/no-recibido',
+  asyncRoute(async (req, res) => {
+    const userId = owner(req as AuthRequest);
+    const plan = await loadTrip(userId, String(req.params.id));
+    if (tripPhase(plan) !== 'settling') throw new HttpError(400, 'El reparto no está en liquidación.');
+    const row = loadSettlement(plan, String(req.params.sid || ''));
+    if (String(row.toId) !== userId) throw new HttpError(403, 'Solo quien tiene que recibir puede rechazarlo.');
+    if (String(row.fromId) === userId) throw new HttpError(403, 'No puedes confirmar un pago que te haces a ti.');
+    if (row.status !== 'awaiting_confirmation') throw new HttpError(400, 'Todavía no hay un pago que confirmar.');
+    const now = new Date();
+    row.status = 'disputed';
+    row.statusAt = now;
+    row.reminded24 = false;
+    row.reminded72 = false;
+    row.events.push({ at: now, userId, action: 'disputed', note: 'Ha dicho que no le ha llegado.' });
+    const actor = memberName(plan, userId);
+    const amount = moneyLabel(row.amount);
+    logActivity(plan, `${actor} no ha recibido el pago`, `${amount} siguen pendientes.`, 'disputed', row._id);
+    await plan.save();
+    await tell(String(plan._id), [String(row.fromId)], `${actor} no ha recibido ${amount}`, `En «${plan.name}» el pago sigue abierto.`);
     res.json({ ok: true });
   }),
 );
