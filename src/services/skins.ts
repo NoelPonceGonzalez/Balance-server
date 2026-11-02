@@ -141,6 +141,131 @@ export function medianEur(sales: PricedSale[]): number | null {
   return roundMoney(value);
 }
 
+export interface OpenAsk {
+  market: 'CSFloat' | 'Skinport';
+  id: string;
+  eur: number;
+  url: string;
+  floatValue: number | null;
+  image: string | null;
+}
+
+let csfloatListingsBlockedUntil = 0;
+let skinportCache: { at: number; rows: Map<string, { min: number | null; qty: number; url: string }> } | null = null;
+
+async function csfloatAsks(name: string): Promise<OpenAsk[] | 'blocked'> {
+  const params = new URLSearchParams({
+    limit: '20',
+    sort_by: 'lowest_price',
+    type: 'buy_now',
+    market_hash_name: name,
+  });
+  const response = await fetch(`https://csfloat.com/api/v1/listings?${params}`, {
+    headers: {
+      accept: 'application/json',
+      'user-agent': 'Mozilla/5.0',
+      origin: 'https://csfloat.com',
+      referer: 'https://csfloat.com/',
+    },
+    signal: AbortSignal.timeout(12_000),
+  });
+  if (response.status === 401 || response.status === 403) return 'blocked';
+  if (!response.ok) return [];
+  const data = (await response.json()) as { data?: unknown };
+  const rows = Array.isArray(data.data) ? data.data : [];
+  const rate = await usdPerEur();
+  if (!rate) return [];
+  return rows.flatMap((row) => {
+    if (!row || typeof row !== 'object') return [];
+    const listing = row as { id?: string; price?: number; item?: { float_value?: number; icon_url?: string; market_hash_name?: string } };
+    if (listing.item?.market_hash_name && listing.item.market_hash_name !== name) return [];
+    const usd = typeof listing.price === 'number' ? listing.price / 100 : null;
+    const id = typeof listing.id === 'string' ? listing.id : '';
+    if (usd == null || !(usd > 0) || !id) return [];
+    const floatValue = listing.item?.float_value;
+    const eur = roundMoney(usd / rate);
+    return [{
+      market: 'CSFloat' as const,
+      id: `csfloat:${id}:${eur}`,
+      eur,
+      url: `https://csfloat.com/item/${id}`,
+      floatValue: typeof floatValue === 'number' && Number.isFinite(floatValue) ? floatValue : null,
+      image: steamIcon(listing.item?.icon_url),
+    }];
+  });
+}
+
+async function skinportBoard(): Promise<Map<string, { min: number | null; qty: number; url: string }>> {
+  if (skinportCache && Date.now() - skinportCache.at < 8 * 60_000) return skinportCache.rows;
+  try {
+    const response = await fetch('https://api.skinport.com/v1/items?app_id=730&currency=EUR&tradable=0', {
+      headers: { accept: 'application/json', 'user-agent': 'Balance/1.0' },
+      signal: AbortSignal.timeout(20_000),
+    });
+    if (!response.ok) return skinportCache?.rows ?? new Map();
+    const data = (await response.json()) as unknown;
+    const rows = new Map<string, { min: number | null; qty: number; url: string }>();
+    if (Array.isArray(data)) {
+      for (const row of data) {
+        if (!row || typeof row !== 'object') continue;
+        const item = row as { market_hash_name?: string; min_price?: number | null; quantity?: number; item_page?: string; market_page?: string };
+        if (!item.market_hash_name) continue;
+        const min = typeof item.min_price === 'number' && item.min_price > 0 ? item.min_price : null;
+        rows.set(item.market_hash_name, {
+          min,
+          qty: typeof item.quantity === 'number' ? item.quantity : 0,
+          url: item.item_page || item.market_page || 'https://skinport.com/',
+        });
+      }
+    }
+    skinportCache = { at: Date.now(), rows };
+    return rows;
+  } catch {
+    return skinportCache?.rows ?? new Map();
+  }
+}
+
+/** Ofertas abiertas, no ventas ya cerradas. CSFloat las tapa sin cuenta; entonces se leen las de Skinport. */
+export async function openAsks(names: string[]): Promise<Map<string, OpenAsk[]>> {
+  const out = new Map<string, OpenAsk[]>();
+  const unique = [...new Set(names)];
+  let blocked = Date.now() < csfloatListingsBlockedUntil;
+  if (!blocked) {
+    for (const name of unique) {
+      try {
+        const asks = await csfloatAsks(name);
+        if (asks === 'blocked') {
+          blocked = true;
+          csfloatListingsBlockedUntil = Date.now() + 30 * 60_000;
+          break;
+        }
+        if (asks.length) out.set(name, asks);
+      } catch (error) {
+        console.error('ofertas', error instanceof Error ? error.message : error);
+      }
+    }
+  }
+  const missing = unique.filter((name) => !out.has(name));
+  if (!missing.length) return out;
+  const board = await skinportBoard();
+  for (const name of missing) {
+    const row = board.get(name);
+    if (!row || row.qty < 1 || row.min == null) {
+      out.set(name, []);
+      continue;
+    }
+    out.set(name, [{
+      market: 'Skinport',
+      id: `skinport:${row.min}`,
+      eur: row.min,
+      url: row.url,
+      floatValue: null,
+      image: null,
+    }]);
+  }
+  return out;
+}
+
 function steamIcon(icon: string | undefined): string | null {
   if (!icon || icon.length > 500) return null;
   if (icon.startsWith('https://')) return icon;

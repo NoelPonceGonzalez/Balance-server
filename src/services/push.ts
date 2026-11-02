@@ -47,7 +47,7 @@ export async function sendToUser(userId: string, payload: { title: string; body:
 
 /** Al activar el móvil, manda el aviso de compra que sigue pendiente. */
 export async function pushPendingOffers(userId: string): Promise<number> {
-  const note = await Notification.findOne({ userId, quoteKey: /^csfloat:/ }).sort({ createdAt: -1 });
+  const note = await Notification.findOne({ userId, quoteKey: /^listing:/ }).sort({ createdAt: -1 });
   if (!note) return 0;
   return sendToUser(userId, { title: note.title, body: note.body, url: note.url });
 }

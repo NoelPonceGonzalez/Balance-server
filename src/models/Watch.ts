@@ -10,6 +10,8 @@ const WatchSchema = new mongoose.Schema(
     lastPriceEur: { type: Number, default: null },
     lastSoldAt: { type: Date, default: null },
     lastCheckedAt: { type: Date, default: null },
+    place: { type: String, default: '' },
+    seenIds: { type: [String], default: [] },
     enabled: { type: Boolean, default: true },
   },
   { timestamps: true },
