@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { Alert } from '../models/Alert.js';
 import { Holding } from '../models/Holding.js';
 import { Notification } from '../models/Notification.js';
 import { PushSub } from '../models/PushSub.js';
@@ -7,7 +8,7 @@ import { authenticateToken, type AuthRequest } from '../middleware/auth.js';
 import { asyncRoute, HttpError } from '../http.js';
 import { asId, asMoney, asOptionalMoney, asText } from '../validate.js';
 import { instantInMadrid, isQuoteId, priceGrainNote, sharesForLump, type QuoteSource } from '../domain/market.js';
-import { attachQuote, checkAlerts, marketFor, marketSkinMoves, priceAt, saveAlert, searchMarket, unlinkQuote } from '../services/market.js';
+import { attachQuote, checkAlerts, followQuote, marketFor, marketSkinMoves, priceAt, saveAlert, searchMarket, unlinkQuote } from '../services/market.js';
 import { currencyBoard } from '../services/fx.js';
 import { itemStory } from '../services/story.js';
 import { rankForSkin, searchSkins, worthNear } from '../services/skins.js';
@@ -206,6 +207,7 @@ router.patch(
       above,
       below,
       enabled: req.body?.enabled !== false,
+      watching: true,
     });
     await checkAlerts();
     res.json({
@@ -232,6 +234,41 @@ router.post(
     await PushSub.updateOne({ endpoint }, { $set: { userId, endpoint, p256dh, auth } }, { upsert: true });
     const sent = await pushPendingOffers(userId);
     res.json({ ok: true, sent });
+  }),
+);
+
+router.post(
+  '/listen',
+  asyncRoute(async (req, res) => {
+    const userId = owner(req as AuthRequest);
+    const source = req.body?.source === 'yahoo' ? 'yahoo' : req.body?.source === 'coingecko' ? 'coingecko' : '';
+    const externalId = asText(req.body?.externalId, 'La cotización', 80);
+    if (!source) throw new HttpError(400, 'Esa cotización no es de un mercado.');
+    const above = asOptionalMoney(req.body?.above, 'El precio superior');
+    const below = asOptionalMoney(req.body?.below, 'El precio inferior');
+    if (!(above != null && above > 0) && !(below != null && below > 0)) {
+      throw new HttpError(400, 'Pon un precio por encima, por debajo, o los dos.');
+    }
+    await followQuote(source, externalId);
+    await saveAlert(userId, `${source}:${externalId}`, {
+      thresholdPct: 0,
+      above: above != null && above > 0 ? above : null,
+      below: below != null && below > 0 ? below : null,
+      enabled: true,
+      watching: true,
+    });
+    await checkAlerts();
+    res.json({ ok: true });
+  }),
+);
+
+router.delete(
+  '/listen/:id',
+  asyncRoute(async (req, res) => {
+    const userId = owner(req as AuthRequest);
+    const id = asId(req.params.id, 'El aviso');
+    await Alert.updateOne({ _id: id, userId }, { $set: { watching: false, enabled: false } });
+    res.json({ ok: true });
   }),
 );
 

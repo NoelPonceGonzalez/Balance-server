@@ -26,6 +26,7 @@ import {
 import { recordSnapshot } from './ledger.js';
 import { resolveSkinLink } from '../domain/skins.js';
 import { scheduleSkinRefresh } from './skins.js';
+import { sendToUser } from './push.js';
 import { checkPurchaseWatches, purchasesFor } from './watches.js';
 import { withMoves } from './story.js';
 
@@ -418,43 +419,50 @@ export async function checkAlerts() {
       ? evaluateBand(quote.changePct ?? null, { thresholdPct: alert.thresholdPct, armed: alert.bandArmed })
       : { fire: null, armed: alert.bandArmed };
     alert.bandArmed = band.armed;
-    if (band.fire && quote.changePct != null) {
-      const verb = band.fire === 'up' ? 'sube' : 'baja';
+    if (!alert.watching) {
+      await alert.save();
+      continue;
+    }
+    const tell = async (title: string, body: string, direction: 'up' | 'down') => {
       await Notification.create({
         userId,
         quoteKey: quote.key,
-        title: `${quote.name} ${verb}`,
-        body: `${signedPct(quote.changePct)} en ${quote.changeLabel}. Precio ${money(quote.priceEur)}.`,
-        direction: band.fire,
+        title,
+        body,
+        direction,
         changePct: quote.changePct,
+        priceEur: quote.priceEur,
       });
+      await sendToUser(userId, { title, body, url: '/' });
+    };
+    if (band.fire && quote.changePct != null && alert.thresholdPct > 0) {
+      const verb = band.fire === 'up' ? 'sube' : 'baja';
+      await tell(
+        `${quote.name} ${verb}`,
+        `${signedPct(quote.changePct)} en ${quote.changeLabel}. Precio ${money(quote.priceEur)}.`,
+        band.fire,
+      );
     }
     if (priced && alert.above != null) {
       const level = evaluateLevel(quote.priceEur, { direction: 'above', target: alert.above, armed: alert.aboveArmed });
       alert.aboveArmed = level.armed;
       if (level.fire) {
-        await Notification.create({
-          userId,
-          quoteKey: quote.key,
-          title: `${quote.name} ha superado tu precio`,
-          body: `Está en ${money(quote.priceEur)}. El aviso estaba en ${money(alert.above)}.`,
-          direction: 'up',
-          changePct: quote.changePct,
-        });
+        await tell(
+          `${quote.name} ha pasado de ${money(alert.above)}`,
+          `Está en ${money(quote.priceEur)}.`,
+          'up',
+        );
       }
     }
     if (priced && alert.below != null) {
       const level = evaluateLevel(quote.priceEur, { direction: 'below', target: alert.below, armed: alert.belowArmed });
       alert.belowArmed = level.armed;
       if (level.fire) {
-        await Notification.create({
-          userId,
-          quoteKey: quote.key,
-          title: `${quote.name} ha bajado de tu precio`,
-          body: `Está en ${money(quote.priceEur)}. El aviso estaba en ${money(alert.below)}.`,
-          direction: 'down',
-          changePct: quote.changePct,
-        });
+        await tell(
+          `${quote.name} ha bajado de ${money(alert.below)}`,
+          `Está en ${money(quote.priceEur)}.`,
+          'down',
+        );
       }
     }
     await alert.save();
@@ -470,6 +478,16 @@ async function doRefresh() {
   const holdings = await Holding.find({ followMarket: { $ne: false }, quoteKey: { $nin: [null, ''] } }).select('quoteKey quoteSource quoteId');
   const coins = [...new Set(holdings.filter((item) => item.quoteSource === 'coingecko' && item.quoteId).map((item) => item.quoteId as string))];
   const listings = [...new Set(holdings.filter((item) => item.quoteSource === 'yahoo' && item.quoteId).map((item) => item.quoteId as string))];
+  const watched = await Alert.find({ enabled: { $ne: false }, watching: true }).select('quoteKey');
+  for (const alert of watched) {
+    const key = String(alert.quoteKey || '');
+    const cut = key.indexOf(':');
+    if (cut < 1) continue;
+    const source = key.slice(0, cut);
+    const externalId = key.slice(cut + 1);
+    if (source === 'coingecko' && externalId && !coins.includes(externalId)) coins.push(externalId);
+    if (source === 'yahoo' && externalId && !listings.includes(externalId)) listings.push(externalId);
+  }
   try {
     const coinQuotes = await fetchCoins(coins);
     const got = new Set(coinQuotes.map((quote) => quote.externalId));
@@ -821,7 +839,48 @@ export async function marketFor(userId: string) {
       tf2: gameRows.find((row) => row.kind === 'tf2' && row.appIcon)?.appIcon || null,
     },
     purchases: await purchasesFor(userId),
+    signals: await signalsFor(userId, alertOf),
   };
+}
+
+export async function signalsFor(userId: string, known?: Map<string, { quoteKey: string; above: number | null; below: number | null; aboveArmed: boolean; belowArmed: boolean; thresholdPct: number; watching?: boolean; enabled?: boolean }>) {
+  const alerts = known
+    ? [...known.values()].filter((alert) => alert.watching && alert.enabled !== false)
+    : await Alert.find({ userId, enabled: { $ne: false }, watching: true });
+  const quotes = await Quote.find({ key: { $in: alerts.map((alert) => alert.quoteKey) } });
+  const byKey = new Map(quotes.map((quote) => [quote.key, quote]));
+  const priceRows = alerts.flatMap((alert) => {
+    const quote = byKey.get(alert.quoteKey);
+    if (!quote) return [];
+    const rules = [
+      alert.above != null ? `por encima de ${money(alert.above)}` : '',
+      alert.below != null ? `por debajo de ${money(alert.below)}` : '',
+      alert.thresholdPct > 0 ? `si el día se mueve más de un ${alert.thresholdPct} %` : '',
+    ].filter(Boolean);
+    const crossed = (alert.above != null && alert.aboveArmed === false) || (alert.below != null && alert.belowArmed === false);
+    return [{
+      id: String((alert as { _id?: unknown })._id || alert.quoteKey),
+      kind: 'precio' as const,
+      name: quote.name,
+      priceEur: quote.priceEur,
+      above: alert.above,
+      below: alert.below,
+      note: crossed ? 'Ya ha cruzado. Sigue escuchando y vuelve a avisar cuando el precio salga y entre otra vez.' : `Escuchando${rules.length ? `: ${rules.join(' · ')}` : ''}.`,
+    }];
+  });
+  const listings = await purchasesFor(userId);
+  return [
+    ...priceRows,
+    ...listings.map((row) => ({
+      id: row.id,
+      kind: 'compra' as const,
+      name: row.label,
+      priceEur: row.priceEur,
+      above: null,
+      below: row.belowEur,
+      note: row.note,
+    })),
+  ];
 }
 
 function cs2Tape(
@@ -894,10 +953,23 @@ function ownedSkins(
   });
 }
 
+export async function followQuote(source: QuoteSource, externalId: string): Promise<void> {
+  if (!isQuoteId(source, externalId)) throw new HttpError(400, 'Esa cotización no es válida.');
+  if (source === 'coingecko') {
+    const quotes = await fetchCoins([externalId]);
+    if (!quotes[0]) throw new HttpError(404, 'Esa cotización no tiene precio.');
+    await saveQuote(quotes[0]);
+    return;
+  }
+  const quote = await fetchListing(externalId, await loadFx());
+  if (!quote) throw new HttpError(404, 'Esa cotización no tiene precio.');
+  await saveQuote(quote);
+}
+
 export async function saveAlert(
   userId: string,
   quoteKeyValue: string,
-  input: { thresholdPct: number; above: number | null; below: number | null; enabled: boolean },
+  input: { thresholdPct: number; above: number | null; below: number | null; enabled: boolean; watching?: boolean },
 ) {
   const current = await Alert.findOne({ userId, quoteKey: quoteKeyValue });
   const next = current || new Alert({ userId, quoteKey: quoteKeyValue });
@@ -908,6 +980,7 @@ export async function saveAlert(
   next.above = input.above;
   next.below = input.below;
   next.enabled = input.enabled;
+  if (input.watching) next.watching = true;
   await next.save();
   return next;
 }

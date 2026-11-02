@@ -10,6 +10,7 @@ const AlertSchema = new mongoose.Schema(
     aboveArmed: { type: Boolean, default: true },
     below: { type: Number, default: null },
     belowArmed: { type: Boolean, default: true },
+    watching: { type: Boolean, default: false },
     enabled: { type: Boolean, default: true },
   },
   { timestamps: true },
