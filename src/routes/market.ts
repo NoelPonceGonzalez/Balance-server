@@ -16,7 +16,8 @@ import { isSkinMarketName, skinBaseName } from '../domain/skins.js';
 import { remindDuePayments } from '../services/plan-reminders.js';
 import { clearCsfloatKey, csfloatConnected, csfloatKeyWorks, saveCsfloatKey } from '../services/csfloat-key.js';
 import { pushPendingOffers, pushPublicKey } from '../services/push.js';
-import { checkPurchaseWatches, passOffer } from '../services/watches.js';
+import { checkPurchaseWatches, keepOffer, passOffer, savedOffers } from '../services/watches.js';
+import { SavedOffer } from '../models/SavedOffer.js';
 
 const router = Router();
 router.use(authenticateToken);
@@ -359,6 +360,33 @@ router.get(
         createdAt: item.createdAt,
       })),
     });
+  }),
+);
+
+router.get(
+  '/saved',
+  asyncRoute(async (req, res) => {
+    res.json({ offers: await savedOffers(owner(req as AuthRequest)) });
+  }),
+);
+
+router.delete(
+  '/saved/:id',
+  asyncRoute(async (req, res) => {
+    const userId = owner(req as AuthRequest);
+    const id = asId(req.params.id, 'La oferta');
+    await SavedOffer.deleteOne({ _id: id, userId });
+    res.json({ ok: true });
+  }),
+);
+
+router.post(
+  '/notifications/:id/keep',
+  asyncRoute(async (req, res) => {
+    const id = asId(req.params.id, 'El aviso');
+    const kept = await keepOffer(owner(req as AuthRequest), id as string);
+    if (!kept) throw new HttpError(404, 'Esa oferta ya no está.');
+    res.json({ ok: true });
   }),
 );
 

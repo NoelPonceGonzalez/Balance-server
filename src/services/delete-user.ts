@@ -5,6 +5,7 @@ import { Extra } from '../models/Extra.js';
 import { Holding } from '../models/Holding.js';
 import { Movement } from '../models/Movement.js';
 import { Notification } from '../models/Notification.js';
+import { SavedOffer } from '../models/SavedOffer.js';
 import { Plan } from '../models/Plan.js';
 import { Snapshot } from '../models/Snapshot.js';
 import { User } from '../models/User.js';
@@ -22,6 +23,7 @@ export async function deleteUserData(userId: string): Promise<void> {
     Snapshot.deleteMany(mine),
     Alert.deleteMany(mine),
     Notification.deleteMany(mine),
+    SavedOffer.deleteMany(mine),
     CsfloatKey.deleteMany(mine),
   ]);
   await User.deleteOne({ _id: userId });

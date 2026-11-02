@@ -1,4 +1,5 @@
 import { Notification } from '../models/Notification.js';
+import { SavedOffer } from '../models/SavedOffer.js';
 import { Watch } from '../models/Watch.js';
 import { readCsfloatKey } from './csfloat-key.js';
 import { sendToUser } from './push.js';
@@ -156,6 +157,58 @@ export function offerIdentity(quoteKey: string | null | undefined): { watchId: s
   const match = rest.match(/^([a-f0-9]{24}):((?:csfloat|skinport):.+)$/);
   if (!match) return null;
   return { watchId: match[1], askId: match[2] };
+}
+
+function httpsUrl(value: string | null | undefined, hosts: string[]): string | null {
+  if (!value || value.length > 500) return null;
+  try {
+    const url = new URL(value);
+    if (url.protocol !== 'https:' || !hosts.includes(url.hostname)) return null;
+    return url.toString();
+  } catch {
+    return null;
+  }
+}
+
+function savedKey(askId: string, url: string): string {
+  const listing = askId.match(/^csfloat:([^:]+)/)?.[1];
+  return listing ? `csfloat:${listing}` : url;
+}
+
+/** «Me interesa»: el anuncio queda en el mercado para abrirlo cuando quiera. */
+export async function keepOffer(userId: string, notificationId: string): Promise<boolean> {
+  const note = await Notification.findOne({ _id: notificationId, userId });
+  const identity = offerIdentity(note?.quoteKey);
+  const url = httpsUrl(note?.url, ['csfloat.com', 'www.csfloat.com', 'skinport.com', 'www.skinport.com']);
+  if (!note || !identity || !url) return false;
+  const label = (note.title || 'Oferta').split(' por debajo de ')[0].trim().slice(0, 80) || 'Oferta';
+  await SavedOffer.updateOne(
+    { userId, listingKey: savedKey(identity.askId, url) },
+    {
+      $set: {
+        label,
+        priceEur: note.priceEur,
+        floatValue: note.floatValue,
+        image: httpsUrl(note.image, ['community.cloudflare.steamstatic.com', 'csfloat.com', 'www.csfloat.com']),
+        url,
+      },
+      $setOnInsert: { userId, listingKey: savedKey(identity.askId, url) },
+    },
+    { upsert: true },
+  );
+  return true;
+}
+
+export async function savedOffers(userId: string) {
+  const rows = await SavedOffer.find({ userId }).sort({ createdAt: -1 });
+  return rows.map((row) => ({
+    id: String(row._id),
+    label: row.label,
+    priceEur: row.priceEur,
+    floatValue: row.floatValue,
+    image: row.image,
+    url: row.url,
+  }));
 }
 
 /** «No me interesa»: ese anuncio, a ese precio, no vuelve. Si el precio cambia, el identificador es otro. */
