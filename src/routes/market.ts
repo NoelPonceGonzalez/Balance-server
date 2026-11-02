@@ -1,6 +1,8 @@
 import { Router } from 'express';
 import { Holding } from '../models/Holding.js';
 import { Notification } from '../models/Notification.js';
+import { PushSub } from '../models/PushSub.js';
+import { Watch } from '../models/Watch.js';
 import { authenticateToken, type AuthRequest } from '../middleware/auth.js';
 import { asyncRoute, HttpError } from '../http.js';
 import { asId, asMoney, asOptionalMoney, asText } from '../validate.js';
@@ -11,6 +13,8 @@ import { itemStory } from '../services/story.js';
 import { rankForSkin, searchSkins, worthNear } from '../services/skins.js';
 import { isSkinMarketName, skinBaseName } from '../domain/skins.js';
 import { remindDuePayments } from '../services/plan-reminders.js';
+import { pushPendingOffers, pushPublicKey } from '../services/push.js';
+import { checkPurchaseWatches } from '../services/watches.js';
 
 const router = Router();
 router.use(authenticateToken);
@@ -211,6 +215,58 @@ router.patch(
 );
 
 router.get(
+  '/push-key',
+  asyncRoute(async (_req, res) => {
+    res.json({ publicKey: pushPublicKey() });
+  }),
+);
+
+router.post(
+  '/push',
+  asyncRoute(async (req, res) => {
+    const userId = owner(req as AuthRequest);
+    const endpoint = asText(req.body?.endpoint, 'El dispositivo', 500);
+    const p256dh = asText(req.body?.keys?.p256dh, 'La clave', 200);
+    const auth = asText(req.body?.keys?.auth, 'La clave', 200);
+    if (!endpoint.startsWith('https://')) throw new HttpError(400, 'El dispositivo no es válido.');
+    await PushSub.updateOne({ endpoint }, { $set: { userId, endpoint, p256dh, auth } }, { upsert: true });
+    const sent = await pushPendingOffers(userId);
+    res.json({ ok: true, sent });
+  }),
+);
+
+router.post(
+  '/watch',
+  asyncRoute(async (req, res) => {
+    const userId = owner(req as AuthRequest);
+    const label = asText(req.body?.label, 'El nombre', 80);
+    const marketHashName = asText(req.body?.marketHashName, 'La skin', 120);
+    const below = asMoney(req.body?.below, 'El precio');
+    if (!isSkinMarketName(skinBaseName(marketHashName))) throw new HttpError(400, 'Esa compra no está en un mercado.');
+    if (!(below > 0)) throw new HttpError(400, 'Pon el precio por debajo del cual avisar.');
+    const current = await Watch.findOne({ userId, marketHashName });
+    const rearm = !current || current.below !== below;
+    await Watch.updateOne(
+      { userId, marketHashName },
+      { $set: { label, below, enabled: true, ...(rearm ? { belowArmed: true } : {}) }, $setOnInsert: { userId, marketHashName } },
+      { upsert: true },
+    );
+    await checkPurchaseWatches();
+    res.json({ ok: true });
+  }),
+);
+
+router.delete(
+  '/watch/:id',
+  asyncRoute(async (req, res) => {
+    const userId = owner(req as AuthRequest);
+    const id = asId(req.params.id, 'El aviso');
+    await Watch.updateOne({ _id: id, userId }, { $set: { enabled: false } });
+    res.json({ ok: true });
+  }),
+);
+
+router.get(
   '/notifications',
   asyncRoute(async (req, res) => {
     const userId = owner(req as AuthRequest);
@@ -228,6 +284,10 @@ router.get(
         body: item.body,
         direction: item.direction,
         changePct: item.changePct,
+        priceEur: item.priceEur,
+        floatValue: item.floatValue,
+        image: item.image,
+        url: item.url,
         read: item.read,
         createdAt: item.createdAt,
       })),

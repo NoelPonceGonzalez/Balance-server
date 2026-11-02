@@ -59,6 +59,8 @@ export interface PricedSale {
   eur: number;
   floatValue: number | null;
   stickers: number;
+  icon: string | null;
+  id: string | null;
 }
 
 const historyCache = new Map<string, { at: number; sales: PricedSale[] }>();
@@ -83,7 +85,7 @@ export async function pricedHistory(marketHashName: string, paintIndex: number |
     if (!Array.isArray(data)) return cached?.sales ?? [];
     const sales = data.flatMap((row) => {
       if (!row || typeof row !== 'object') return [];
-      const sale = row as { price?: number; sold_at?: string; created_at?: string; item?: { float_value?: number; stickers?: unknown[] } };
+      const sale = row as { id?: string; price?: number; sold_at?: string; created_at?: string; item?: { float_value?: number; stickers?: unknown[]; icon_url?: string } };
       const usd = typeof sale.price === 'number' ? sale.price / 100 : null;
       const at = sale.sold_at || sale.created_at || '';
       if (usd == null || !(usd > 0) || !at) return [];
@@ -93,6 +95,8 @@ export async function pricedHistory(marketHashName: string, paintIndex: number |
         eur: roundMoney(usd / rate),
         floatValue: typeof floatValue === 'number' && Number.isFinite(floatValue) ? floatValue : null,
         stickers: Array.isArray(sale.item?.stickers) ? sale.item.stickers.length : 0,
+        icon: steamIcon(sale.item?.icon_url),
+        id: typeof sale.id === 'string' ? sale.id : null,
       }];
     });
     historyCache.set(key, { at: Date.now(), sales });
