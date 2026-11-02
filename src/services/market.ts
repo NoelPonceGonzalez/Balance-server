@@ -24,10 +24,10 @@ import {
   type QuoteSource,
 } from '../domain/market.js';
 import { recordSnapshot } from './ledger.js';
-import { resolveSkinLink } from '../domain/skins.js';
-import { scheduleSkinRefresh } from './skins.js';
+import { resolveSkinLink, skinBaseName } from '../domain/skins.js';
+import { scheduleSkinRefresh, searchSkins } from './skins.js';
 import { sendToUser } from './push.js';
-import { checkPurchaseWatches, purchasesFor } from './watches.js';
+import { checkPurchaseWatches, offerIdentity, purchasesFor } from './watches.js';
 import { withMoves } from './story.js';
 
 const UA = 'Mozilla/5.0';
@@ -866,21 +866,46 @@ export async function signalsFor(userId: string, known?: Map<string, { quoteKey:
       above: alert.above,
       below: alert.below,
       note: crossed ? 'Ya ha cruzado. Sigue escuchando y vuelve a avisar cuando el precio salga y entre otra vez.' : `Escuchando${rules.length ? `: ${rules.join(' · ')}` : ''}.`,
+      image: quote.image || null,
     }];
   });
   const listings = await purchasesFor(userId);
-  return [
-    ...priceRows,
-    ...listings.map((row) => ({
-      id: row.id,
-      kind: 'compra' as const,
-      name: row.label,
-      priceEur: row.priceEur,
-      above: null,
-      below: row.belowEur,
-      note: row.note,
-    })),
-  ];
+  const seen = await listingMarks(userId);
+  const buys = await Promise.all(listings.map(async (row) => ({
+    id: row.id,
+    kind: 'compra' as const,
+    name: row.label,
+    priceEur: row.priceEur,
+    above: null,
+    below: row.belowEur,
+    note: row.note,
+    image: seen.get(row.id) || await skinMark(row.hash),
+  })));
+  return [...priceRows, ...buys];
+}
+
+async function listingMarks(userId: string): Promise<Map<string, string>> {
+  const notes = await Notification.find({ userId, quoteKey: /^listing:/, image: { $nin: [null, ''] } })
+    .sort({ createdAt: -1 })
+    .select('quoteKey image')
+    .limit(80);
+  const marks = new Map<string, string>();
+  for (const note of notes) {
+    const identity = offerIdentity(note.quoteKey);
+    if (!identity || marks.has(identity.watchId) || !note.image) continue;
+    marks.set(identity.watchId, note.image);
+  }
+  return marks;
+}
+
+async function skinMark(hash: string): Promise<string | null> {
+  const name = skinBaseName(hash);
+  if (name.length < 2) return null;
+  const lookup = searchSkins(name)
+    .then((hits) => hits.find((hit) => hit.name === name)?.image || hits[0]?.image || null)
+    .catch(() => null);
+  const abandoned = new Promise<null>((resolve) => setTimeout(() => resolve(null), 1500));
+  return Promise.race([lookup, abandoned]);
 }
 
 function cs2Tape(

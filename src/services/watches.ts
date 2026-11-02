@@ -237,6 +237,7 @@ export async function purchasesFor(userId: string) {
         : under
           ? `Hay una oferta abierta en ${place} a este precio.`
           : `La más barata en ${place} sigue por encima.`,
+      hash: row.marketHashName,
     };
   });
 }
