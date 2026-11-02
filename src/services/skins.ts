@@ -153,16 +153,18 @@ export interface OpenAsk {
 let csfloatListingsBlockedUntil = 0;
 let skinportCache: { at: number; rows: Map<string, { min: number | null; qty: number; url: string }> } | null = null;
 
-async function csfloatAsks(name: string): Promise<OpenAsk[] | 'blocked'> {
+async function csfloatAsks(name: string, key: string | null): Promise<OpenAsk[] | 'blocked'> {
+  if (!key) return 'blocked';
   const params = new URLSearchParams({
     limit: '20',
-    sort_by: 'lowest_price',
+    sort_by: 'most_recent',
     type: 'buy_now',
     market_hash_name: name,
   });
   const response = await fetch(`https://csfloat.com/api/v1/listings?${params}`, {
     headers: {
       accept: 'application/json',
+      authorization: key,
       'user-agent': 'Mozilla/5.0',
       origin: 'https://csfloat.com',
       referer: 'https://csfloat.com/',
@@ -225,18 +227,18 @@ async function skinportBoard(): Promise<Map<string, { min: number | null; qty: n
   }
 }
 
-/** Ofertas abiertas, no ventas ya cerradas. CSFloat las tapa sin cuenta; entonces se leen las de Skinport. */
-export async function openAsks(names: string[]): Promise<Map<string, OpenAsk[]>> {
+/** Ofertas abiertas. Sin clave de CSFloat se leen las de Skinport. */
+export async function openAsks(names: string[], key: string | null = null): Promise<Map<string, OpenAsk[]>> {
   const out = new Map<string, OpenAsk[]>();
   const unique = [...new Set(names)];
-  let blocked = Date.now() < csfloatListingsBlockedUntil;
+  let blocked = !key || Date.now() < csfloatListingsBlockedUntil;
   if (!blocked) {
     for (const name of unique) {
       try {
-        const asks = await csfloatAsks(name);
+        const asks = await csfloatAsks(name, key);
         if (asks === 'blocked') {
           blocked = true;
-          csfloatListingsBlockedUntil = Date.now() + 30 * 60_000;
+          if (!key) csfloatListingsBlockedUntil = Date.now() + 30 * 60_000;
           break;
         }
         if (asks.length) out.set(name, asks);

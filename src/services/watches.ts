@@ -1,5 +1,6 @@
 import { Notification } from '../models/Notification.js';
 import { Watch } from '../models/Watch.js';
+import { readCsfloatKey } from './csfloat-key.js';
 import { sendToUser } from './push.js';
 import { openAsks, type OpenAsk } from './skins.js';
 
@@ -15,9 +16,17 @@ function cheapest(asks: OpenAsk[]): OpenAsk | null {
 export async function checkPurchaseWatches(): Promise<void> {
   const watches = await Watch.find({ enabled: { $ne: false } });
   if (!watches.length) return;
-  const names = [...new Set(watches.map((watch) => watch.marketHashName))];
-  const board = await openAsks(names);
+  const byUser = new Map<string, typeof watches>();
   for (const watch of watches) {
+    const userId = String(watch.userId);
+    const rows = byUser.get(userId) || [];
+    rows.push(watch);
+    byUser.set(userId, rows);
+  }
+  for (const [userId, rows] of byUser) {
+    const key = await readCsfloatKey(userId);
+    const board = await openAsks(rows.map((watch) => watch.marketHashName), key);
+    for (const watch of rows) {
     const asks = board.get(watch.marketHashName) || [];
     const low = cheapest(asks);
     const hot = asks.filter((ask) => ask.eur <= watch.below);
@@ -54,6 +63,7 @@ export async function checkPurchaseWatches(): Promise<void> {
     }
     watch.seenIds = [...seen];
     await watch.save();
+    }
   }
 }
 

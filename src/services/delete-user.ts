@@ -1,4 +1,5 @@
 import { Account } from '../models/Account.js';
+import { CsfloatKey } from '../models/CsfloatKey.js';
 import { Alert } from '../models/Alert.js';
 import { Extra } from '../models/Extra.js';
 import { Holding } from '../models/Holding.js';
@@ -21,6 +22,7 @@ export async function deleteUserData(userId: string): Promise<void> {
     Snapshot.deleteMany(mine),
     Alert.deleteMany(mine),
     Notification.deleteMany(mine),
+    CsfloatKey.deleteMany(mine),
   ]);
   await User.deleteOne({ _id: userId });
 }

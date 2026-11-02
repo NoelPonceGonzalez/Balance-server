@@ -14,6 +14,7 @@ import { itemStory } from '../services/story.js';
 import { rankForSkin, searchSkins, worthNear } from '../services/skins.js';
 import { isSkinMarketName, skinBaseName } from '../domain/skins.js';
 import { remindDuePayments } from '../services/plan-reminders.js';
+import { clearCsfloatKey, csfloatConnected, csfloatKeyWorks, saveCsfloatKey } from '../services/csfloat-key.js';
 import { pushPendingOffers, pushPublicKey } from '../services/push.js';
 import { checkPurchaseWatches } from '../services/watches.js';
 
@@ -234,6 +235,35 @@ router.post(
     await PushSub.updateOne({ endpoint }, { $set: { userId, endpoint, p256dh, auth } }, { upsert: true });
     const sent = await pushPendingOffers(userId);
     res.json({ ok: true, sent });
+  }),
+);
+
+router.get(
+  '/csfloat',
+  asyncRoute(async (req, res) => {
+    res.json({ connected: await csfloatConnected(owner(req as AuthRequest)) });
+  }),
+);
+
+router.put(
+  '/csfloat',
+  asyncRoute(async (req, res) => {
+    const userId = owner(req as AuthRequest);
+    const key = asText(req.body?.key, 'La clave', 200).replace(/^Bearer\s+/i, '');
+    if (key.length < 20 || /\s/.test(key)) throw new HttpError(400, 'Esa clave no tiene la forma de una clave de CSFloat.');
+    const check = await csfloatKeyWorks(key);
+    if (check === 'rejected') throw new HttpError(400, 'CSFloat no ha aceptado la clave.');
+    if (check === 'later') throw new HttpError(503, 'CSFloat no ha respondido. Prueba otra vez en unos minutos.');
+    await saveCsfloatKey(userId, key);
+    res.json({ connected: true });
+  }),
+);
+
+router.delete(
+  '/csfloat',
+  asyncRoute(async (req, res) => {
+    await clearCsfloatKey(owner(req as AuthRequest));
+    res.json({ connected: false });
   }),
 );
 
