@@ -16,7 +16,7 @@ import { isSkinMarketName, skinBaseName } from '../domain/skins.js';
 import { remindDuePayments } from '../services/plan-reminders.js';
 import { clearCsfloatKey, csfloatConnected, csfloatKeyWorks, saveCsfloatKey } from '../services/csfloat-key.js';
 import { pushPendingOffers, pushPublicKey } from '../services/push.js';
-import { checkPurchaseWatches } from '../services/watches.js';
+import { checkPurchaseWatches, passOffer } from '../services/watches.js';
 
 const router = Router();
 router.use(authenticateToken);
@@ -359,6 +359,15 @@ router.get(
         createdAt: item.createdAt,
       })),
     });
+  }),
+);
+
+router.post(
+  '/notifications/:id/pass',
+  asyncRoute(async (req, res) => {
+    const id = asId(req.params.id, 'El aviso');
+    await passOffer(owner(req as AuthRequest), id as string);
+    res.json({ ok: true });
   }),
 );
 

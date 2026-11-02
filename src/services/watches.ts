@@ -25,19 +25,22 @@ export async function checkPurchaseWatches(): Promise<void> {
   }
   for (const [userId, rows] of byUser) {
     const key = await readCsfloatKey(userId);
-    const board = await openAsks(rows.map((watch) => watch.marketHashName), key);
+    const caps = new Map<string, number>();
+    for (const watch of rows) caps.set(watch.marketHashName, Math.max(caps.get(watch.marketHashName) || 0, watch.below));
+    const board = await openAsks(rows.map((watch) => watch.marketHashName), key, caps);
     for (const watch of rows) {
     const asks = board.get(watch.marketHashName) || [];
     const low = cheapest(asks);
     const hot = asks.filter((ask) => ask.eur <= watch.below);
     const hotIds = new Set(hot.map((ask) => ask.id));
+    const passed = new Set(watch.passedIds || []);
     const seen = new Set(watch.seenIds || []);
     watch.lastPriceEur = low?.eur ?? null;
     watch.lastCheckedAt = new Date();
     watch.place = low?.market || hot[0]?.market || watch.place || '';
     for (const ask of hot) {
-      if (seen.has(ask.id)) continue;
-      const quoteKey = `listing:${ask.id}:${Date.now()}`;
+      if (passed.has(ask.id) || seen.has(ask.id)) continue;
+      const quoteKey = `listing:${String(watch._id)}:${ask.id}:${Date.now()}`;
       const existing = await Notification.findOne({ userId: watch.userId, quoteKey });
       const title = `${watch.label} a la venta por debajo de ${money(watch.below)}`;
       const body = `Alguien lo ha puesto en ${ask.market} a ${money(ask.eur)}.`;
@@ -65,6 +68,20 @@ export async function checkPurchaseWatches(): Promise<void> {
     await watch.save();
     }
   }
+}
+
+export function offerIdentity(quoteKey: string | null | undefined): { watchId: string; askId: string } | null {
+  const match = quoteKey?.match(/^listing:([a-f0-9]{24}):(.+):(\d{13})$/);
+  if (!match) return null;
+  return { watchId: match[1], askId: match[2] };
+}
+
+/** «No me interesa»: ese anuncio, a ese precio, no vuelve. Si el precio cambia, el identificador es otro. */
+export async function passOffer(userId: string, notificationId: string): Promise<void> {
+  const note = await Notification.findOne({ _id: notificationId, userId }).select('quoteKey');
+  const identity = offerIdentity(note?.quoteKey);
+  if (!identity) return;
+  await Watch.updateOne({ _id: identity.watchId, userId }, { $addToSet: { passedIds: identity.askId } });
 }
 
 export async function purchasesFor(userId: string) {

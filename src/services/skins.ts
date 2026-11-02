@@ -153,14 +153,16 @@ export interface OpenAsk {
 let csfloatListingsBlockedUntil = 0;
 let skinportCache: { at: number; rows: Map<string, { min: number | null; qty: number; url: string }> } | null = null;
 
-async function csfloatAsks(name: string, key: string | null): Promise<OpenAsk[] | 'blocked'> {
+async function csfloatAsks(name: string, key: string | null, maxEur: number | null): Promise<OpenAsk[] | 'blocked'> {
   if (!key) return 'blocked';
   const params = new URLSearchParams({
-    limit: '20',
-    sort_by: 'most_recent',
+    limit: '50',
+    sort_by: 'lowest_price',
     type: 'buy_now',
     market_hash_name: name,
   });
+  const rate = await usdPerEur();
+  if (maxEur != null && maxEur > 0 && rate) params.set('max_price', String(Math.ceil(maxEur * rate * 100)));
   const response = await fetch(`https://csfloat.com/api/v1/listings?${params}`, {
     headers: {
       accept: 'application/json',
@@ -175,7 +177,6 @@ async function csfloatAsks(name: string, key: string | null): Promise<OpenAsk[] 
   if (!response.ok) return [];
   const data = (await response.json()) as { data?: unknown };
   const rows = Array.isArray(data.data) ? data.data : [];
-  const rate = await usdPerEur();
   if (!rate) return [];
   return rows.flatMap((row) => {
     if (!row || typeof row !== 'object') return [];
@@ -228,14 +229,14 @@ async function skinportBoard(): Promise<Map<string, { min: number | null; qty: n
 }
 
 /** Ofertas abiertas. Sin clave de CSFloat se leen las de Skinport. */
-export async function openAsks(names: string[], key: string | null = null): Promise<Map<string, OpenAsk[]>> {
+export async function openAsks(names: string[], key: string | null = null, maxEur = new Map<string, number>()): Promise<Map<string, OpenAsk[]>> {
   const out = new Map<string, OpenAsk[]>();
   const unique = [...new Set(names)];
   let blocked = !key || Date.now() < csfloatListingsBlockedUntil;
   if (!blocked) {
     for (const name of unique) {
       try {
-        const asks = await csfloatAsks(name, key);
+        const asks = await csfloatAsks(name, key, maxEur.get(name) ?? null);
         if (asks === 'blocked') {
           blocked = true;
           if (!key) csfloatListingsBlockedUntil = Date.now() + 30 * 60_000;
