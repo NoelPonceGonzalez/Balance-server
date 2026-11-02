@@ -867,6 +867,7 @@ export async function signalsFor(userId: string, known?: Map<string, { quoteKey:
       below: alert.below,
       note: crossed ? 'Ya ha cruzado. Sigue escuchando y vuelve a avisar cuando el precio salga y entre otra vez.' : `Escuchando${rules.length ? `: ${rules.join(' · ')}` : ''}.`,
       image: quote.image || null,
+      quoteKey: alert.quoteKey,
     }];
   });
   const listings = await purchasesFor(userId);
