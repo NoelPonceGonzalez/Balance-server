@@ -153,7 +153,7 @@ export interface OpenAsk {
 let csfloatListingsBlockedUntil = 0;
 let skinportCache: { at: number; rows: Map<string, { min: number | null; qty: number; url: string }> } | null = null;
 
-async function csfloatAsks(name: string, key: string | null, maxEur: number | null): Promise<OpenAsk[] | 'blocked'> {
+async function csfloatAsks(name: string, key: string | null, maxEur: number | null): Promise<OpenAsk[] | 'blocked' | 'unknown'> {
   if (!key) return 'blocked';
   const params = new URLSearchParams({
     limit: '50',
@@ -174,22 +174,23 @@ async function csfloatAsks(name: string, key: string | null, maxEur: number | nu
     signal: AbortSignal.timeout(12_000),
   });
   if (response.status === 401 || response.status === 403) return 'blocked';
-  if (!response.ok) return [];
+  if (!response.ok) return 'unknown';
   const data = (await response.json()) as { data?: unknown };
   const rows = Array.isArray(data.data) ? data.data : [];
-  if (!rate) return [];
+  if (!rate) return 'unknown';
   return rows.flatMap((row) => {
     if (!row || typeof row !== 'object') return [];
     const listing = row as { id?: string; price?: number; item?: { float_value?: number; icon_url?: string; market_hash_name?: string } };
     if (listing.item?.market_hash_name && listing.item.market_hash_name !== name) return [];
     const usd = typeof listing.price === 'number' ? listing.price / 100 : null;
     const id = typeof listing.id === 'string' ? listing.id : '';
-    if (usd == null || !(usd > 0) || !id) return [];
+    const cents = typeof listing.price === 'number' ? Math.round(listing.price) : 0;
+    if (usd == null || !(usd > 0) || !id || !(cents > 0)) return [];
     const floatValue = listing.item?.float_value;
     const eur = roundMoney(usd / rate);
     return [{
       market: 'CSFloat' as const,
-      id: `csfloat:${id}:${eur}`,
+      id: `csfloat:${id}:${cents}`,
       eur,
       url: `https://csfloat.com/item/${id}`,
       floatValue: typeof floatValue === 'number' && Number.isFinite(floatValue) ? floatValue : null,
@@ -228,9 +229,9 @@ async function skinportBoard(): Promise<Map<string, { min: number | null; qty: n
   }
 }
 
-/** Ofertas abiertas. Sin clave de CSFloat se leen las de Skinport. */
-export async function openAsks(names: string[], key: string | null = null, maxEur = new Map<string, number>()): Promise<Map<string, OpenAsk[]>> {
-  const out = new Map<string, OpenAsk[]>();
+/** Ofertas abiertas. `null` significa que CSFloat no ha contestado: no se inventa otra tienda ni se olvida lo ya avisado. */
+export async function openAsks(names: string[], key: string | null = null, maxEur = new Map<string, number>()): Promise<Map<string, OpenAsk[] | null>> {
+  const out = new Map<string, OpenAsk[] | null>();
   const unique = [...new Set(names)];
   let blocked = !key || Date.now() < csfloatListingsBlockedUntil;
   if (!blocked) {
@@ -242,9 +243,14 @@ export async function openAsks(names: string[], key: string | null = null, maxEu
           if (!key) csfloatListingsBlockedUntil = Date.now() + 30 * 60_000;
           break;
         }
+        if (asks === 'unknown') {
+          out.set(name, null);
+          continue;
+        }
         if (asks.length) out.set(name, asks);
       } catch (error) {
         console.error('ofertas', error instanceof Error ? error.message : error);
+        out.set(name, null);
       }
     }
   }

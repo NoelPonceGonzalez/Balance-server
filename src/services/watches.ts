@@ -12,10 +12,75 @@ function cheapest(asks: OpenAsk[]): OpenAsk | null {
   return asks.reduce<OpenAsk | null>((best, ask) => (best == null || ask.eur < best.eur ? ask : best), null);
 }
 
-/** Mira ofertas abiertas. Una venta ya hecha no avisa. Cada oferta nueva por debajo del precio, sí. */
-export async function checkPurchaseWatches(): Promise<void> {
+function listingOf(id: string): string | null {
+  return id.match(/^csfloat:([^:]+)/)?.[1] ?? null;
+}
+
+function legacyListing(ids: Set<string>, listing: string): boolean {
+  for (const id of ids) {
+    const token = id.match(/^csfloat:([^:]+):([^:]+)$/);
+    if (token && token[1] === listing && token[2].includes('.')) return true;
+  }
+  return false;
+}
+
+function centsKnown(ids: Set<string>, listing: string): boolean {
+  for (const id of ids) {
+    const token = id.match(/^csfloat:([^:]+):([^:]+)$/);
+    if (token && token[1] === listing && !token[2].includes('.')) return true;
+  }
+  return false;
+}
+
+function legacyOnly(ids: Set<string>, listing: string): boolean {
+  return legacyListing(ids, listing) && !centsKnown(ids, listing);
+}
+function dropLegacy(ids: Set<string>, listing: string) {
+  for (const id of [...ids]) {
+    const token = id.match(/^csfloat:([^:]+):([^:]+)$/);
+    if (token && token[1] === listing && token[2].includes('.')) ids.delete(id);
+  }
+}
+
+export function askIdFromQuoteKey(quoteKey: string | null | undefined): string | null {
+  if (!quoteKey?.startsWith('listing:')) return null;
+  const rest = quoteKey.slice('listing:'.length).replace(/^[a-f0-9]{24}:/, '').replace(/:\d{13}$/, '');
+  return /^(csfloat|skinport):/.test(rest) ? rest : null;
+}
+
+/** Un aviso por anuncio. Las copias del mismo guante se quitan y su identificador se recuerda para no volver a empujar. */
+async function rememberedAsks(): Promise<Map<string, Set<string>>> {
+  const notes = await Notification.find({ quoteKey: /^listing:/ }).select('userId quoteKey').sort({ createdAt: -1 });
+  const memory = new Map<string, Set<string>>();
+  const kept = new Set<string>();
+  const drop: unknown[] = [];
+  for (const note of notes) {
+    const userId = String(note.userId);
+    const askId = askIdFromQuoteKey(note.quoteKey);
+    const listing = askId ? listingOf(askId) || askId : String(note._id);
+    const ids = memory.get(userId) || new Set<string>();
+    if (askId) ids.add(askId);
+    memory.set(userId, ids);
+    const bucket = `${userId}:${listing}`;
+    if (kept.has(bucket)) drop.push(note._id);
+    else kept.add(bucket);
+  }
+  if (drop.length) await Notification.deleteMany({ _id: { $in: drop } });
+  return memory;
+}
+
+/** Mira ofertas abiertas. Una venta ya hecha no avisa. El mismo anuncio, al mismo precio, solo una vez. */
+let checking: Promise<void> | null = null;
+
+export function checkPurchaseWatches(): Promise<void> {
+  if (!checking) checking = runPurchaseWatches().finally(() => { checking = null; });
+  return checking;
+}
+
+async function runPurchaseWatches(): Promise<void> {
   const watches = await Watch.find({ enabled: { $ne: false } });
   if (!watches.length) return;
+  const memory = await rememberedAsks();
   const byUser = new Map<string, typeof watches>();
   for (const watch of watches) {
     const userId = String(watch.userId);
@@ -28,50 +93,67 @@ export async function checkPurchaseWatches(): Promise<void> {
     const caps = new Map<string, number>();
     for (const watch of rows) caps.set(watch.marketHashName, Math.max(caps.get(watch.marketHashName) || 0, watch.below));
     const board = await openAsks(rows.map((watch) => watch.marketHashName), key, caps);
+    const prior = memory.get(userId) || new Set<string>();
     for (const watch of rows) {
-    const asks = board.get(watch.marketHashName) || [];
-    const low = cheapest(asks);
-    const hot = asks.filter((ask) => ask.eur <= watch.below);
-    const hotIds = new Set(hot.map((ask) => ask.id));
-    const passed = new Set(watch.passedIds || []);
-    const seen = new Set(watch.seenIds || []);
-    watch.lastPriceEur = low?.eur ?? null;
-    watch.lastCheckedAt = new Date();
-    watch.place = low?.market || hot[0]?.market || watch.place || '';
-    for (const ask of hot) {
-      if (passed.has(ask.id) || seen.has(ask.id)) continue;
-      const quoteKey = `listing:${String(watch._id)}:${ask.id}:${Date.now()}`;
-      const existing = await Notification.findOne({ userId: watch.userId, quoteKey });
-      const title = `${watch.label} a la venta por debajo de ${money(watch.below)}`;
-      const body = `Alguien lo ha puesto en ${ask.market} a ${money(ask.eur)}.`;
-      if (!existing) {
-        await Notification.create({
-          userId: watch.userId,
-          quoteKey,
-          title,
-          body,
-          direction: 'down',
-          changePct: null,
-          priceEur: ask.eur,
-          floatValue: ask.floatValue,
-          image: ask.image,
-          url: ask.url,
-        });
-        await sendToUser(String(watch.userId), { title, body, url: ask.url });
+      const asks = board.get(watch.marketHashName);
+      if (asks == null) {
+        watch.lastCheckedAt = new Date();
+        await watch.save();
+        continue;
       }
-      seen.add(ask.id);
-    }
-    for (const id of seen) {
-      if (!hotIds.has(id)) seen.delete(id);
-    }
-    watch.seenIds = [...seen];
-    await watch.save();
+      const low = cheapest(asks);
+      const hot = asks.filter((ask) => ask.eur <= watch.below);
+      const passed = new Set(watch.passedIds || []);
+      const seen = new Set([...(watch.seenIds || []), ...prior]);
+      watch.lastPriceEur = low?.eur ?? null;
+      watch.lastCheckedAt = new Date();
+      watch.place = low?.market || hot[0]?.market || watch.place || '';
+      for (const ask of hot) {
+        const listing = listingOf(ask.id);
+        if (passed.has(ask.id)) continue;
+        if (listing && legacyOnly(passed, listing)) {
+          dropLegacy(passed, listing);
+          passed.add(ask.id);
+          continue;
+        }
+        if (seen.has(ask.id)) continue;
+        if (listing && legacyOnly(seen, listing)) {
+          dropLegacy(seen, listing);
+          seen.add(ask.id);
+          continue;
+        }
+        const quoteKey = `listing:${String(watch._id)}:${ask.id}`;
+        const existing = await Notification.findOne({ userId: watch.userId, quoteKey });
+        if (!existing) {
+          const title = `${watch.label} a la venta por debajo de ${money(watch.below)}`;
+          const body = `Alguien lo ha puesto en ${ask.market} a ${money(ask.eur)}.`;
+          await Notification.create({
+            userId: watch.userId,
+            quoteKey,
+            title,
+            body,
+            direction: 'down',
+            changePct: null,
+            priceEur: ask.eur,
+            floatValue: ask.floatValue,
+            image: ask.image,
+            url: ask.url,
+          });
+          await sendToUser(String(watch.userId), { title, body, url: ask.url });
+        }
+        seen.add(ask.id);
+      }
+      watch.seenIds = [...seen].slice(-800);
+      watch.passedIds = [...passed].slice(-800);
+      await watch.save();
     }
   }
 }
 
 export function offerIdentity(quoteKey: string | null | undefined): { watchId: string; askId: string } | null {
-  const match = quoteKey?.match(/^listing:([a-f0-9]{24}):(.+):(\d{13})$/);
+  if (!quoteKey?.startsWith('listing:')) return null;
+  const rest = quoteKey.slice('listing:'.length).replace(/:\d{13}$/, '');
+  const match = rest.match(/^([a-f0-9]{24}):((?:csfloat|skinport):.+)$/);
   if (!match) return null;
   return { watchId: match[1], askId: match[2] };
 }
