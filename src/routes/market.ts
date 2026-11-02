@@ -214,7 +214,11 @@ router.get(
   '/notifications',
   asyncRoute(async (req, res) => {
     const userId = owner(req as AuthRequest);
-    await remindDuePayments(userId);
+    try {
+      await remindDuePayments(userId);
+    } catch (error) {
+      console.error('avisos', error instanceof Error ? error.message : error);
+    }
     const notifications = await Notification.find({ userId }).sort({ createdAt: -1 }).limit(40);
     res.json({
       notifications: notifications.map((item) => ({

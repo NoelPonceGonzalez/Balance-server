@@ -26,6 +26,7 @@ import {
 import { recordSnapshot } from './ledger.js';
 import { resolveSkinLink } from '../domain/skins.js';
 import { scheduleSkinRefresh } from './skins.js';
+import { checkPurchaseWatches, purchasesFor } from './watches.js';
 import { withMoves } from './story.js';
 
 const UA = 'Mozilla/5.0';
@@ -401,14 +402,21 @@ async function applyQuotes(fx: Record<string, number>) {
 export async function checkAlerts() {
   const alerts = await Alert.find({ enabled: { $ne: false } });
   if (!alerts.length) return;
-  const quotes = await Quote.find({ key: { $in: alerts.map((alert) => alert.quoteKey) }, error: null });
+  const quotes = await Quote.find({ key: { $in: alerts.map((alert) => alert.quoteKey) } });
   const byKey = new Map(quotes.map((quote) => [quote.key, quote]));
+  const levelWindow = 24 * 60 * 60 * 1000;
   for (const alert of alerts) {
     const quote = byKey.get(alert.quoteKey);
-    if (!quote || Date.now() - new Date(quote.fetchedAt).getTime() > STALE_MS) continue;
+    if (!quote) continue;
+    const age = Date.now() - new Date(quote.fetchedAt).getTime();
+    const fresh = !quote.error && age <= STALE_MS;
+    const priced = quote.priceEur != null && age <= levelWindow;
+    if (!fresh && !priced) continue;
     if (!alert.userId) continue;
     const userId = String(alert.userId);
-    const band = evaluateBand(quote.changePct ?? null, { thresholdPct: alert.thresholdPct, armed: alert.bandArmed });
+    const band = fresh
+      ? evaluateBand(quote.changePct ?? null, { thresholdPct: alert.thresholdPct, armed: alert.bandArmed })
+      : { fire: null, armed: alert.bandArmed };
     alert.bandArmed = band.armed;
     if (band.fire && quote.changePct != null) {
       const verb = band.fire === 'up' ? 'sube' : 'baja';
@@ -421,7 +429,7 @@ export async function checkAlerts() {
         changePct: quote.changePct,
       });
     }
-    if (alert.above != null) {
+    if (priced && alert.above != null) {
       const level = evaluateLevel(quote.priceEur, { direction: 'above', target: alert.above, armed: alert.aboveArmed });
       alert.aboveArmed = level.armed;
       if (level.fire) {
@@ -435,7 +443,7 @@ export async function checkAlerts() {
         });
       }
     }
-    if (alert.below != null) {
+    if (priced && alert.below != null) {
       const level = evaluateLevel(quote.priceEur, { direction: 'below', target: alert.below, armed: alert.belowArmed });
       alert.belowArmed = level.armed;
       if (level.fire) {
@@ -490,6 +498,11 @@ async function doRefresh() {
   void listed;
   await applyQuotes(fx);
   await checkAlerts();
+  try {
+    await checkPurchaseWatches();
+  } catch (error) {
+    console.error('compras', error instanceof Error ? error.message : error);
+  }
   scheduleSkinRefresh();
 }
 
@@ -807,6 +820,7 @@ export async function marketFor(userId: string) {
       cs2: gameRows.find((row) => row.kind === 'cs2' && row.appIcon)?.appIcon || null,
       tf2: gameRows.find((row) => row.kind === 'tf2' && row.appIcon)?.appIcon || null,
     },
+    purchases: await purchasesFor(userId),
   };
 }
 
