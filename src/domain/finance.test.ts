@@ -493,6 +493,15 @@ describe('planes de ahorro', () => {
     }, 0, '2026-10-01');
     assert.equal(late.estimatedDate?.slice(0, 7), '2027-01');
     assert.equal(late.extraMonths, 1);
+    assert.equal(late.months.at(-1)?.month, '2027-01');
+    assert.equal(plain.months.at(-1)?.month, '2026-12');
+    const early = forecastPlan({
+      ...base,
+      incomes: [{ amount: 2000, date: '2026-10-02', status: 'confirmed' }],
+    }, 0, '2026-10-01');
+    assert.equal(early.estimatedDate?.slice(0, 7), '2026-10');
+    assert.equal(early.months.at(-1)?.month, '2026-10');
+    assert.equal(early.months.some((month) => month.month === '2026-12'), false);
   });
 
   it('avanza los días sin salirse del calendario', () => {

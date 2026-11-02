@@ -857,8 +857,9 @@ function ledgerEvents(plan: SavingsPlanInput, fromDay: string, endDay: string, t
 }
 
 /** Mes a mes, con los mismos días que la simulación. Como máximo 60 meses. */
-export function planMonths(plan: SavingsPlanInput, today = todayKey()): PlanMonthView[] {
-  const end = plan.targetDate >= plan.startDate ? plan.targetDate : plan.startDate;
+export function planMonths(plan: SavingsPlanInput, today = todayKey(), endDay?: string): PlanMonthView[] {
+  const target = plan.targetDate >= plan.startDate ? plan.targetDate : plan.startDate;
+  const end = endDay && endDay >= plan.startDate ? endDay : target;
   const capped = addDays(plan.startDate, 31 * 60);
   const last = end < capped ? end : capped;
   const events = ledgerEvents(plan, plan.startDate, last, today);
@@ -1168,8 +1169,9 @@ export function forecastPlan(plan: SavingsPlanInput, realBalance: number | null,
   }
 
   const extraMonths = estimated?.hit ? monthDistance(plan.targetDate, estimated.hit) : null;
+  const horizon = estimated?.hit && estimated.hit >= plan.startDate ? estimated.hit : (plan.targetDate >= plan.startDate ? plan.targetDate : plan.startDate);
 
-  const seriesEnd = plan.targetDate > today ? plan.targetDate : today;
+  const seriesEnd = horizon > today ? horizon : today;
   const seriesWalk = walk(plan, plan.openingBalance, plan.startDate, seriesEnd, { monthlySavings: plan.monthlySavings, includeExpected: false }, null);
   const seriesExpected = walk(plan, plan.openingBalance, plan.startDate, seriesEnd, { monthlySavings: plan.monthlySavings, includeExpected: true }, null);
   const months = new Set([...seriesWalk.monthEnds.keys(), ...seriesExpected.monthEnds.keys()]);
@@ -1214,7 +1216,7 @@ export function forecastPlan(plan: SavingsPlanInput, realBalance: number | null,
     gapAtTarget,
     savingsEventsRemaining,
     series,
-    months: planMonths(plan, today),
+    months: planMonths(plan, today, horizon),
     scenarios,
     notes,
   };
