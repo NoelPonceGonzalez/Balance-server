@@ -525,10 +525,38 @@ describe('planes de ahorro', () => {
       incomes: [{ name: 'Navidad', amount: 500, date: '2026-12-24', status: 'expected' }],
     };
     const forecast = forecastPlan(plan, 3246.98, '2026-11-04');
-    const crossing = forecast.series.find((row) => row.planned >= plan.targetAmount);
+    const crossing = forecast.series.find((row) => row.withExpected >= plan.targetAmount);
     assert.equal(forecast.estimatedDate?.slice(0, 7), '2027-07');
     assert.equal(forecast.estimatedDate?.slice(0, 7), crossing?.month);
     assert.equal(forecast.months.at(-1)?.month, '2027-07');
+    assert.equal(forecast.months.some((month) => month.month === '2027-08'), false);
+  });
+
+  it('la llegada cuenta el dinero esperado igual que el cierre previsto', () => {
+    const plan: SavingsPlanInput = {
+      openingBalance: 3246.98,
+      startDate: '2026-10-01',
+      targetAmount: 10000,
+      targetDate: '2027-06-30',
+      monthlySavings: 1150,
+      savingsDay: 31,
+      includedUntil: '2026-10-26',
+      recurring: [],
+      intervals: [{ id: 'entrenador', name: 'Entrenador', amount: 165, everyWeeks: 12, startDate: '2026-10-14', direction: 'out' }],
+      plannedExpenses: [
+        { name: 'Muñequeras', amount: 55, date: '2026-10-23' },
+        { name: 'Guantes', amount: 3850, date: '2026-12-01' },
+        { name: 'Regalo', amount: 100, date: '2026-12-20' },
+        { name: 'Cena', amount: 200, date: '2026-12-24' },
+        { name: 'Cumpleaños', amount: 100, date: '2027-02-15' },
+      ],
+      incomes: [{ name: 'Navidad', amount: 500, date: '2026-12-24', status: 'expected' }],
+    };
+    const forecast = forecastPlan(plan, 3246.98, '2026-11-04');
+    const july = forecast.series.find((row) => row.month === '2027-07');
+    assert.ok((july?.withExpected ?? 0) >= plan.targetAmount);
+    assert.ok((july?.planned ?? 0) < plan.targetAmount);
+    assert.equal(forecast.estimatedDate?.slice(0, 7), '2027-07');
     assert.equal(forecast.months.some((month) => month.month === '2027-08'), false);
   });
 

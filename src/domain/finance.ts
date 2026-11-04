@@ -1170,8 +1170,10 @@ export function forecastPlan(plan: SavingsPlanInput, realBalance: number | null,
     notes.push('Con el ahorro y los gastos confirmados, el objetivo no se alcanza en 40 años.');
   }
 
-  const extraMonths = estimated?.hit ? monthDistance(plan.targetDate, estimated.hit) : null;
-  const horizon = estimated?.hit && estimated.hit >= plan.startDate ? estimated.hit : (plan.targetDate >= plan.startDate ? plan.targetDate : plan.startDate);
+  // El cierre previsto de cada mes cuenta el dinero esperado; la llegada y los meses mostrados siguen esa misma cuenta.
+  const arrival = estimatedExpected?.hit ?? estimated?.hit ?? null;
+  const extraMonths = arrival ? monthDistance(plan.targetDate, arrival) : null;
+  const horizon = arrival && arrival >= plan.startDate ? arrival : (plan.targetDate >= plan.startDate ? plan.targetDate : plan.startDate);
 
   const seriesEnd = horizon > today ? horizon : today;
   const seriesWalk = walk(plan, plan.openingBalance, plan.startDate, seriesEnd, { monthlySavings: plan.monthlySavings, includeExpected: false }, null);
@@ -1211,7 +1213,7 @@ export function forecastPlan(plan: SavingsPlanInput, realBalance: number | null,
     deviationEur: real == null ? 0 : deviationEur,
     compliancePct,
     onTrack,
-    estimatedDate: estimated?.hit ?? null,
+    estimatedDate: arrival,
     estimatedDateWithExpected: estimatedExpected?.hit ?? null,
     extraMonths,
     extraMonthlyToRecover,
