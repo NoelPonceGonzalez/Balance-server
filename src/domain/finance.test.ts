@@ -504,6 +504,34 @@ describe('planes de ahorro', () => {
     assert.equal(early.months.some((month) => month.month === '2026-12'), false);
   });
 
+  it('la llegada usa el mismo saldo que el cierre de los meses', () => {
+    const plan: SavingsPlanInput = {
+      openingBalance: 3246.98,
+      startDate: '2026-10-01',
+      targetAmount: 10000,
+      targetDate: '2027-06-30',
+      monthlySavings: 1150,
+      savingsDay: 31,
+      includedUntil: '2026-10-26',
+      recurring: [],
+      plannedExpenses: [
+        { name: 'Entrenador', amount: 165, date: '2026-10-14', automatic: true, absorbed: true },
+        { name: 'Muñequeras', amount: 55, date: '2026-10-23' },
+        { name: 'Guantes', amount: 3850, date: '2026-12-01' },
+        { name: 'Regalo', amount: 100, date: '2026-12-20' },
+        { name: 'Cena', amount: 200, date: '2026-12-24' },
+        { name: 'Cumpleaños', amount: 100, date: '2027-02-15' },
+      ],
+      incomes: [{ name: 'Navidad', amount: 500, date: '2026-12-24', status: 'expected' }],
+    };
+    const forecast = forecastPlan(plan, 3246.98, '2026-11-04');
+    const crossing = forecast.series.find((row) => row.planned >= plan.targetAmount);
+    assert.equal(forecast.estimatedDate?.slice(0, 7), '2027-07');
+    assert.equal(forecast.estimatedDate?.slice(0, 7), crossing?.month);
+    assert.equal(forecast.months.at(-1)?.month, '2027-07');
+    assert.equal(forecast.months.some((month) => month.month === '2027-08'), false);
+  });
+
   it('avanza los días sin salirse del calendario', () => {
     assert.equal(addDays('2026-01-31', 1), '2026-02-01');
   });

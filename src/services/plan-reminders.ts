@@ -2,6 +2,7 @@ import { addDays, forecastReached, todayKey } from '../domain/finance.js';
 import { Notification } from '../models/Notification.js';
 import { Plan } from '../models/Plan.js';
 import { User } from '../models/User.js';
+import { sendToUser } from './push.js';
 
 async function finishedPlanIds(userId: string): Promise<Set<string>> {
   const { forecastPlanList } = await import('./ledger.js');
@@ -40,10 +41,15 @@ function dayLabel(date: string): string {
   return `${day || 1} ${months[(month || 1) - 1]} ${year || ''}`.trim();
 }
 
+function pushQuietly(userId: string, title: string, body: string): void {
+  void sendToUser(userId, { title, body, url: '/' }).catch(() => undefined);
+}
+
 async function ensureDue(userId: string, key: string, title: string, body: string): Promise<void> {
   const exists = await Notification.findOne({ userId, quoteKey: key });
   if (!exists) {
     await Notification.create({ userId, quoteKey: key, title, body, direction: 'due', changePct: null });
+    pushQuietly(userId, title, body);
     return;
   }
   if (exists.title !== title || exists.body !== body) {
@@ -70,6 +76,21 @@ export function remindDuePayments(userId: string): Promise<void> {
     });
   remindPending.set(userId, job);
   return job;
+}
+
+/** Los avisos de pagos y nóminas llegan al móvil aunque la app esté cerrada. */
+export function startReminderLoop(): void {
+  const sweep = async () => {
+    try {
+      const users = await Plan.distinct('userId', { kind: { $ne: 'gastos' } });
+      for (const id of users) await remindDuePayments(String(id)).catch(() => undefined);
+    } catch (error) {
+      console.error('recordatorios', error instanceof Error ? error.message : error);
+    }
+  };
+  const timer = setInterval(() => { void sweep(); }, 15 * 60_000);
+  timer.unref?.();
+  setTimeout(() => { void sweep(); }, 20_000).unref?.();
 }
 
 async function runReminders(userId: string): Promise<void> {
@@ -178,6 +199,7 @@ async function runReminders(userId: string): Promise<void> {
           direction: due.direction,
           changePct: null,
         });
+        pushQuietly(userId, due.title, due.body);
       }
     }
   }

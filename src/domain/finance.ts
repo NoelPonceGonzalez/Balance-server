@@ -1151,18 +1151,20 @@ export function forecastPlan(plan: SavingsPlanInput, realBalance: number | null,
   }
 
   const searchEnd = addDays(today, HORIZON_DAYS);
+  // El cierre de los meses sale del saldo del plan a día de hoy. La llegada tiene que seguir ese mismo saldo:
+  // si se parte del efectivo a secas, se pierden nóminas ya contadas y la fecha se va un mes más allá.
   const estimated =
     real == null
       ? null
-      : real >= plan.targetAmount
+      : real >= plan.targetAmount || plannedToday >= plan.targetAmount
         ? { hit: today }
-        : walk(plan, real, tomorrow, searchEnd, { monthlySavings: plan.monthlySavings, includeExpected: false, stopWhenHit: true }, plan.targetAmount);
+        : walk(plan, plannedToday, tomorrow, searchEnd, { monthlySavings: plan.monthlySavings, includeExpected: false, stopWhenHit: true }, plan.targetAmount);
   const estimatedExpected =
     real == null
       ? null
-      : real >= plan.targetAmount
+      : real >= plan.targetAmount || plannedWithExpectedToday >= plan.targetAmount
         ? { hit: today }
-        : walk(plan, real, tomorrow, searchEnd, { monthlySavings: plan.monthlySavings, includeExpected: true, stopWhenHit: true }, plan.targetAmount);
+        : walk(plan, plannedWithExpectedToday, tomorrow, searchEnd, { monthlySavings: plan.monthlySavings, includeExpected: true, stopWhenHit: true }, plan.targetAmount);
 
   if (estimated && estimated.hit == null && real != null && real < plan.targetAmount) {
     notes.push('Con el ahorro y los gastos confirmados, el objetivo no se alcanza en 40 años.');
