@@ -18,6 +18,7 @@ import { clearCsfloatKey, csfloatConnected, csfloatKeyWorks, saveCsfloatKey } fr
 import { pushPendingOffers, pushPublicKey } from '../services/push.js';
 import { checkPurchaseWatches, keepOffer, passOffer, savedOffers } from '../services/watches.js';
 import { SavedOffer } from '../models/SavedOffer.js';
+import { browseListings, LISTING_SORTS, listingDetail, searchCatalog, trackedFor, trackListing, untrackListing, type ListingSort } from '../services/csfloat-listings.js';
 
 const router = Router();
 router.use(authenticateToken);
@@ -265,6 +266,78 @@ router.delete(
   asyncRoute(async (req, res) => {
     await clearCsfloatKey(owner(req as AuthRequest));
     res.json({ connected: false });
+  }),
+);
+
+function optionalNumber(value: unknown, min: number, max: number, label: string): number | null {
+  if (value == null || value === '') return null;
+  const number = Number(String(value).replace(',', '.'));
+  if (!Number.isFinite(number) || number < min || number > max) throw new HttpError(400, `${label} no es válido.`);
+  return number;
+}
+
+function listingId(value: unknown): string {
+  const id = typeof value === 'string' ? value.trim() : '';
+  if (!/^\d{6,25}$/.test(id)) throw new HttpError(400, 'Ese anuncio no es válido.');
+  return id;
+}
+
+router.get(
+  '/csfloat/catalog',
+  asyncRoute(async (req, res) => {
+    const query = asText(req.query.q, 'La búsqueda', 60, false);
+    res.json({ results: query.trim().length < 2 ? [] : await searchCatalog(query) });
+  }),
+);
+
+router.get(
+  '/csfloat/listings',
+  asyncRoute(async (req, res) => {
+    const marketHashName = asText(req.query.name, 'La skin', 120);
+    if (!isSkinMarketName(skinBaseName(marketHashName))) throw new HttpError(400, 'Esa skin no es válida.');
+    const sortText = typeof req.query.sort === 'string' ? req.query.sort : 'lowest_price';
+    const sort = (LISTING_SORTS as readonly string[]).includes(sortText) ? (sortText as ListingSort) : 'lowest_price';
+    const listings = await browseListings(owner(req as AuthRequest), {
+      marketHashName,
+      sort,
+      minFloat: optionalNumber(req.query.minFloat, 0, 1, 'El float mínimo'),
+      maxFloat: optionalNumber(req.query.maxFloat, 0, 1, 'El float máximo'),
+      maxEur: optionalNumber(req.query.maxEur, 0.01, 10_000_000, 'El precio máximo'),
+      paintSeed: optionalNumber(req.query.seed, 0, 100_000, 'El patrón'),
+      paintIndex: optionalNumber(req.query.paint, 0, 100_000, 'La fase'),
+    });
+    const starred = new Set((await trackedFor(owner(req as AuthRequest))).map((row) => row.id));
+    res.json({ listings: listings.map((listing) => ({ ...listing, tracked: starred.has(listing.id) })) });
+  }),
+);
+
+router.get(
+  '/csfloat/listings/:id',
+  asyncRoute(async (req, res) => {
+    res.json(await listingDetail(owner(req as AuthRequest), listingId(req.params.id)));
+  }),
+);
+
+router.get(
+  '/tracked',
+  asyncRoute(async (req, res) => {
+    res.json({ tracked: await trackedFor(owner(req as AuthRequest)) });
+  }),
+);
+
+router.post(
+  '/tracked/:id',
+  asyncRoute(async (req, res) => {
+    await trackListing(owner(req as AuthRequest), listingId(req.params.id));
+    res.json({ ok: true });
+  }),
+);
+
+router.delete(
+  '/tracked/:id',
+  asyncRoute(async (req, res) => {
+    await untrackListing(owner(req as AuthRequest), listingId(req.params.id));
+    res.json({ ok: true });
   }),
 );
 

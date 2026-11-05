@@ -7,7 +7,7 @@ const GAP_MS = 30 * 60_000;
 let lastRunAt = 0;
 let usdPerEurCache: { at: number; rate: number } | null = null;
 
-async function usdPerEur(): Promise<number | null> {
+export async function usdPerEur(): Promise<number | null> {
   if (usdPerEurCache && Date.now() - usdPerEurCache.at < 10 * 60_000) return usdPerEurCache.rate;
   try {
     const response = await fetch('https://api.frankfurter.app/latest?from=EUR', {
@@ -275,7 +275,7 @@ export async function openAsks(names: string[], key: string | null = null, maxEu
   return out;
 }
 
-function steamIcon(icon: string | undefined): string | null {
+export function steamIcon(icon: string | undefined): string | null {
   if (!icon || icon.length > 500) return null;
   if (icon.startsWith('https://')) return icon;
   if (/[\s"'<>]/.test(icon)) return null;

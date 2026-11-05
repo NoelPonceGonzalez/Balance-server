@@ -28,6 +28,7 @@ import { resolveSkinLink, skinBaseName } from '../domain/skins.js';
 import { scheduleSkinRefresh, searchSkins } from './skins.js';
 import { sendToUser } from './push.js';
 import { checkPurchaseWatches, offerIdentity, purchasesFor } from './watches.js';
+import { checkTrackedListings } from './csfloat-listings.js';
 import { withMoves } from './story.js';
 
 const UA = 'Mozilla/5.0';
@@ -520,6 +521,11 @@ async function doRefresh() {
     await checkPurchaseWatches();
   } catch (error) {
     console.error('compras', error instanceof Error ? error.message : error);
+  }
+  try {
+    await checkTrackedListings();
+  } catch (error) {
+    console.error('anuncios', error instanceof Error ? error.message : error);
   }
   scheduleSkinRefresh();
 }
