@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { estimateSkin, linkSkin, rankFromFloat, resolveSkinLink, seriesMove, type SkinSale } from './skins.ts';
+import { estimateSkin, linkSkin, rankFromFloat, resolveSkinLink, seriesMove, wearFromQuery, type SkinSale } from './skins.ts';
 
 const talon: SkinSale[] = [
   { usd: 3600, floatValue: 0.0083046, lowRank: 32, stickers: 0 },
@@ -116,6 +116,13 @@ describe('skins', () => {
     assert.equal(short.changePct, -5);
     assert.equal(short.changeLabel, 'en las ventas');
     assert.equal(seriesMove([{ at: '2026-10-26T12:00:00.000Z', eur: 10 }]).changePct, null);
+  });
+
+  it('separa el desgaste de una búsqueda concreta y deja el nombre del modelo', () => {
+    assert.deepEqual(wearFromQuery('Pandora Factory New'), { wear: 'Factory New', rest: 'Pandora' });
+    assert.deepEqual(wearFromQuery('ak redline ft'), { wear: 'Field-Tested', rest: 'ak redline' });
+    assert.deepEqual(wearFromQuery('pandora'), { wear: null, rest: 'pandora' });
+    assert.deepEqual(wearFromQuery('factory new'), { wear: 'Factory New', rest: '' });
   });
 
   it('no da un precio si no hay dos ventas comparables', () => {

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { netsAfterConfirmed, splitTrip, transfersOf, type SplitPerson } from './split.ts';
+import { budgetOf, netsAfterConfirmed, splitTrip, transfersOf, type SplitPerson } from './split.ts';
 
 function person(id: string, contributed = 0): SplitPerson {
   return { id, name: id, color: '#000', contributed };
@@ -58,6 +58,28 @@ describe('splitTrip', () => {
     assert.equal(split.people.find((item) => item.id === 'luis')?.net, -30);
     assert.equal(split.people.find((item) => item.id === 'carlos')?.net, 0);
     assert.equal(split.transfers.length, 1);
+  });
+
+  it('el hotel fuera no baja lo que lleva cada uno', () => {
+    const board = budgetOf(
+      [{ id: 'ana', pocket: 400 }, { id: 'luis', pocket: 400 }],
+      [{ amount: 200, counts: false }, { amount: 60, counts: true }],
+    );
+    assert.equal(board.budget, 800);
+    assert.equal(board.left, 740);
+    assert.equal(board.people.find((item) => item.id === 'ana')?.left, 370);
+    assert.equal(board.people.find((item) => item.id === 'luis')?.left, 370);
+  });
+
+  it('un gasto solo entre dos no baja a quien no entra en el presupuesto', () => {
+    const board = budgetOf(
+      [{ id: 'ana', pocket: 100 }, { id: 'luis', pocket: 100 }, { id: 'carlos', pocket: 100 }],
+      [{ amount: 40, splitAmong: ['ana', 'luis'] }],
+    );
+    assert.equal(board.people.find((item) => item.id === 'ana')?.left, 80);
+    assert.equal(board.people.find((item) => item.id === 'luis')?.left, 80);
+    assert.equal(board.people.find((item) => item.id === 'carlos')?.left, 100);
+    assert.equal(board.left, 260);
   });
 
   it('un pago confirmado baja la deuda que queda', () => {

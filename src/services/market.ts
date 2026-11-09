@@ -35,16 +35,16 @@ const UA = 'Mozilla/5.0';
 const FRESH_MS = 45_000;
 const STALE_MS = 3 * 60_000;
 const TRACKED = new Set(['crypto', 'stock', 'etf']);
-const ETF_BOARD = ['VWCE.DE', 'SXR8.DE', 'EUNL.DE', 'QDVE.DE'];
+const ETF_BOARD = ['VWCE.DE', 'SXR8.DE', 'EUNL.DE', 'QDVE.DE', 'VUSA.DE', 'IWDA.AS', 'CSPX.L', 'EQAC.DE'];
 const STABLES = new Set(['usdt', 'usdc', 'dai', 'fdusd', 'tusd', 'usde', 'usds', 'eurc', 'pyusd']);
 type TapeKind = 'crypto' | 'etf' | 'stock' | 'gold' | 'silver' | 'oil' | 'copper' | 'index';
 type BoardSlot = { key: string; kind: TapeKind };
-const STOCK_BOARD = ['AAPL', 'MSFT', 'NVDA', 'ASML.AS'];
+const STOCK_BOARD = ['AAPL', 'MSFT', 'NVDA', 'GOOGL', 'AMZN', 'META', 'TSLA', 'AVGO', 'AMD', 'NFLX', 'JPM', 'V', 'ASML.AS', 'MC.PA', 'SAP.DE', 'SIE.DE', 'OR.PA', 'AIR.PA'];
 const GOLD_BOARD = ['GC=F'];
 const SILVER_BOARD = ['SI=F'];
 const OIL_BOARD = ['BZ=F'];
 const COPPER_BOARD = ['HG=F'];
-const INDEX_BOARD = ['^IBEX', '^GDAXI', '^STOXX50E', '^GSPC'];
+const INDEX_BOARD = ['^IBEX', '^GDAXI', '^STOXX50E', '^GSPC', '^IXIC', '^DJI', '^FTSE', '^FCHI'];
 let boardSlots: BoardSlot[] = [
   ...ETF_BOARD.map((symbol) => ({ key: quoteKey('yahoo', symbol), kind: 'etf' as const })),
   ...STOCK_BOARD.map((symbol) => ({ key: quoteKey('yahoo', symbol), kind: 'stock' as const })),
@@ -74,8 +74,13 @@ let fxCache: Record<string, number> = {};
 
 async function readJson(url: string, headers: Record<string, string>): Promise<unknown> {
   const response = await fetch(url, { headers, signal: AbortSignal.timeout(12_000) });
+  if (response.status === 429) throw new Error('429');
   if (!response.ok) throw new Error(`La fuente ha respondido ${response.status}.`);
   return response.json();
+}
+
+function limited(error: unknown): boolean {
+  return error instanceof Error && error.message === '429';
 }
 
 function geckoHeaders(): Record<string, string> {
@@ -497,8 +502,10 @@ async function doRefresh() {
       if (!got.has(id)) await markQuoteError('coingecko', id, 'CoinGecko no ha devuelto este activo.');
     }
   } catch (error) {
-    lastError = error instanceof Error ? error.message : 'CoinGecko no responde.';
-    for (const id of coins) await markQuoteError('coingecko', id, lastError);
+    if (!limited(error)) {
+      lastError = error instanceof Error ? error.message : 'CoinGecko no responde.';
+      for (const id of coins) await markQuoteError('coingecko', id, lastError);
+    }
   }
   const listed = await pool(listings, 4, async (symbol) => {
     try {
@@ -509,8 +516,8 @@ async function doRefresh() {
       }
       await saveQuote(quote);
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Yahoo Finance no responde.';
-      lastError = message;
+      const message = limited(error) ? 'Hay que esperar un momento para actualizar este precio.' : error instanceof Error ? error.message : 'Yahoo Finance no responde.';
+      if (!limited(error)) lastError = message;
       await markQuoteError('yahoo', symbol, message);
     }
   });
@@ -530,9 +537,12 @@ async function doRefresh() {
   scheduleSkinRefresh();
 }
 
+let topCoins: { at: number; quotes: LiveQuote[] } | null = null;
+
 async function fetchTopCoins(): Promise<LiveQuote[]> {
+  if (topCoins && Date.now() - topCoins.at < 3 * 60_000) return topCoins.quotes;
   const data = (await readJson(
-    'https://api.coingecko.com/api/v3/coins/markets?vs_currency=eur&order=market_cap_desc&per_page=20&page=1&sparkline=true&price_change_percentage=24h',
+    'https://api.coingecko.com/api/v3/coins/markets?vs_currency=eur&order=market_cap_desc&per_page=100&page=1&sparkline=true&price_change_percentage=24h',
     geckoHeaders(),
   )) as {
     id?: string;
@@ -543,7 +553,7 @@ async function fetchTopCoins(): Promise<LiveQuote[]> {
     price_change_percentage_24h?: number | null;
     sparkline_in_7d?: { price?: number[] };
   }[];
-  return data
+  const quotes = data
     .flatMap((row) => {
       if (!row.id || row.current_price == null || !Number.isFinite(row.current_price)) return [];
       const symbol = String(row.symbol || '').toUpperCase();
@@ -562,14 +572,16 @@ async function fetchTopCoins(): Promise<LiveQuote[]> {
         sparkline: downsample(row.sparkline_in_7d?.price || []),
       }];
     })
-    .slice(0, 8);
+    .slice(0, 40);
+  topCoins = { at: Date.now(), quotes };
+  return quotes;
 }
 
 export function refreshMarket(): Promise<void> {
   if (!refreshing) {
     refreshing = doRefresh()
       .catch((error) => {
-        lastError = error instanceof Error ? error.message : 'No se han podido actualizar las cotizaciones.';
+        if (!limited(error)) lastError = error instanceof Error ? error.message : 'No se han podido actualizar las cotizaciones.';
         console.error('mercado', error);
       })
       .finally(() => {
@@ -589,7 +601,7 @@ async function refreshBoard(fx: Record<string, number>) {
       cryptos.push({ key: quoteKey(quote.source, quote.externalId), kind: 'crypto' });
     }
   } catch (error) {
-    lastError = error instanceof Error ? error.message : 'CoinGecko no responde.';
+    if (!limited(error)) lastError = error instanceof Error ? error.message : 'CoinGecko no responde.';
   }
   if (!cryptos.length) cryptos = boardSlots.filter((slot) => slot.kind === 'crypto');
 
@@ -628,8 +640,8 @@ async function fillListed(
       await saveQuote(quote);
       slots[index] = { key, kind };
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Yahoo Finance no responde.';
-      lastError = message;
+      const message = limited(error) ? 'Hay que esperar un momento para actualizar este precio.' : error instanceof Error ? error.message : 'Yahoo Finance no responde.';
+      if (!limited(error)) lastError = message;
       await markQuoteError('yahoo', symbol, message);
       if (previous.has(key)) slots[index] = { key, kind };
     }

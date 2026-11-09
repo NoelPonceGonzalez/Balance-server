@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { Router } from 'express';
 import { Plan } from '../models/Plan.js';
-import { netsAfterConfirmed, splitTrip, transfersOf } from '../domain/split.js';
+import { budgetOf, netsAfterConfirmed, splitTrip, transfersOf } from '../domain/split.js';
 import { Account } from '../models/Account.js';
 import { User } from '../models/User.js';
 import { Notification } from '../models/Notification.js';
@@ -25,32 +25,46 @@ function joinCodeOk(code: string): boolean {
   return /^[A-Za-z0-9_-]{8,24}$/.test(code);
 }
 
+function countsInBudget(value: unknown): boolean {
+  return value !== false;
+}
+
 function splitOf(plan: {
-  members?: { userId: unknown; name: string; color: string; contributed?: number }[];
-  tripExpenses?: { paidBy: unknown; amount: number; splitAmong?: unknown[] }[];
+  members?: { userId: unknown; name: string; color: string; contributed?: number; pocket?: number }[];
+  tripExpenses?: { paidBy: unknown; amount: number; splitAmong?: unknown[]; counts?: boolean }[];
   settlements?: { status?: string; fromId: unknown; toId: unknown; amount: number }[];
 }) {
+  const members = plan.members || [];
+  const expenses = plan.tripExpenses || [];
   const live = splitTrip(
-    (plan.members || []).map((member) => ({
+    members.map((member) => ({
       id: String(member.userId),
       name: member.name,
       color: member.color,
       contributed: member.contributed || 0,
     })),
-    (plan.tripExpenses || []).map((expense) => ({
+    expenses.map((expense) => ({
       paidBy: String(expense.paidBy),
       amount: expense.amount,
       splitAmong: (expense.splitAmong || []).map((id) => String(id)),
     })),
   );
+  const budget = budgetOf(
+    members.map((member) => ({ id: String(member.userId), pocket: member.pocket || 0 })),
+    expenses.map((expense) => ({
+      amount: expense.amount,
+      splitAmong: (expense.splitAmong || []).map((id) => String(id)),
+      counts: countsInBudget(expense.counts),
+    })),
+  );
   const confirmed = (plan.settlements || []).filter((row) => row.status === 'confirmed');
-  if (confirmed.length === 0) return live;
+  if (confirmed.length === 0) return { ...live, budget };
   const people = netsAfterConfirmed(live.people, confirmed.map((row) => ({
     fromId: String(row.fromId),
     toId: String(row.toId),
     amount: row.amount,
   })));
-  return { ...live, people, transfers: transfersOf(people) };
+  return { ...live, people, transfers: transfersOf(people), budget };
 }
 
 function tripPhase(plan: { tripStatus?: string }): 'active' | 'settling' | 'done' {
@@ -577,7 +591,9 @@ router.patch(
     const member = plan.members.find((item) => String(item.userId) === target);
     if (!member) throw new HttpError(404, 'Esa persona no está en el reparto.');
     assertOpen(plan);
-    member.contributed = asMoney(body.contributed ?? 0, 'Lo aportado', true);
+    if (body.pocket === undefined && body.contributed === undefined) throw new HttpError(400, 'Falta el importe.');
+    if (body.contributed !== undefined) member.contributed = asMoney(body.contributed ?? 0, 'Lo aportado', true);
+    if (body.pocket !== undefined) member.pocket = asMoney(body.pocket ?? 0, 'Lo que llevas', true);
     await plan.save();
     res.json({ ok: true });
   }),
@@ -629,6 +645,7 @@ router.post(
       paidBy,
       paidByName: payer?.name || '',
       category: expenseKind(body.category),
+      counts: countsInBudget(body.counts),
       splitAmong: expenseAmong(plan, body.splitAmong),
       date: todayKey(user?.timezone || 'Europe/Madrid'),
       receipt,
@@ -658,6 +675,7 @@ router.patch(
     row.paidBy = memberId(plan, body.paidBy, 'Quién lo ha pagado');
     row.paidByName = plan.members.find((item) => String(item.userId) === String(row.paidBy))?.name || row.paidByName || '';
     row.set('category', expenseKind(body.category));
+    row.set('counts', countsInBudget(body.counts));
     row.set('splitAmong', expenseAmong(plan, body.splitAmong));
     await plan.save();
     res.json({ ok: true });
@@ -716,7 +734,7 @@ async function leaveReparto(plan: Awaited<ReturnType<typeof loadTrip>>, userId: 
   }
   const staying = plan.members
     .filter((item) => String(item.userId) !== userId)
-    .map((item) => ({ userId: item.userId, name: item.name, color: item.color, contributed: item.contributed || 0 }));
+    .map((item) => ({ userId: item.userId, name: item.name, color: item.color, contributed: item.contributed || 0, pocket: item.pocket || 0 }));
   if (staying.length === 0) {
     await plan.deleteOne();
     return;

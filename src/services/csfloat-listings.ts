@@ -1,10 +1,11 @@
 import { roundMoney } from '../domain/finance.js';
+import { wearFromQuery } from '../domain/skins.js';
 import { HttpError } from '../http.js';
 import { Notification } from '../models/Notification.js';
 import { TrackedListing } from '../models/TrackedListing.js';
 import { readCsfloatKey } from './csfloat-key.js';
 import { sendToUser } from './push.js';
-import { medianEur, pricedHistory, steamIcon, usdPerEur } from './skins.js';
+import { medianEur, pricedHistory, searchSkins, steamIcon, usdPerEur } from './skins.js';
 
 export const LISTING_SORTS = ['lowest_price', 'highest_price', 'lowest_float', 'highest_float', 'most_recent', 'best_deal'] as const;
 export type ListingSort = (typeof LISTING_SORTS)[number];
@@ -119,6 +120,7 @@ export interface CatalogHit {
   label: string;
   kind: string;
   paintIndex: number | null;
+  image: string | null;
   wears: { wear: string; refEur: number | null }[];
 }
 
@@ -174,12 +176,22 @@ async function catalog(): Promise<CatalogEntry[]> {
 }
 
 /** Busca en el catálogo de CSFloat: guantes, cuchillos y armas, con las fases de Doppler por separado. */
-export async function searchCatalog(query: string): Promise<CatalogHit[]> {
-  const words = fold(query).split(' ').filter(Boolean);
-  if (!words.length) return [];
-  const [entries, rate] = await Promise.all([catalog(), usdPerEur()]);
+export async function searchCatalog(query: string): Promise<{ results: CatalogHit[]; wear: string | null }> {
+  const parsed = wearFromQuery(query);
+  const words = fold(parsed.rest).split(' ').filter(Boolean);
+  if (!words.length) return { results: [], wear: parsed.wear };
+  const [entries, rate, steam] = await Promise.all([
+    catalog(),
+    usdPerEur(),
+    searchSkins(parsed.rest).catch(() => []),
+  ]);
+  const pictures = new Map<string, string>();
+  for (const hit of steam) {
+    if (!hit.image) continue;
+    pictures.set(fold(hit.name), hit.image);
+  }
   const compact = words.join('');
-  return entries
+  const results = entries
     .filter((entry) => words.every((word) => entry.folded.includes(word)) || entry.folded.replace(/ /g, '').includes(compact))
     .sort((a, b) => (KIND_ORDER[a.kind] ?? 9) - (KIND_ORDER[b.kind] ?? 9) || a.label.localeCompare(b.label))
     .slice(0, 12)
@@ -188,11 +200,13 @@ export async function searchCatalog(query: string): Promise<CatalogHit[]> {
       label: entry.label,
       kind: entry.kind,
       paintIndex: entry.paintIndex,
+      image: pictures.get(fold(entry.name)) || pictures.get(fold(entry.label)) || null,
       wears: entry.wears.map((wear) => {
         const cents = entry.pricesUsd[WEARS.indexOf(wear as (typeof WEARS)[number])];
         return { wear, refEur: cents && rate ? roundMoney(cents / 100 / rate) : null };
       }),
     }));
+  return { results, wear: parsed.wear };
 }
 
 async function keyFor(userId: string): Promise<string> {

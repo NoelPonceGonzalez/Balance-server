@@ -15,7 +15,7 @@ import { rankForSkin, searchSkins, worthNear } from '../services/skins.js';
 import { isSkinMarketName, skinBaseName } from '../domain/skins.js';
 import { remindDuePayments } from '../services/plan-reminders.js';
 import { clearCsfloatKey, csfloatConnected, csfloatKeyWorks, saveCsfloatKey } from '../services/csfloat-key.js';
-import { pushPendingOffers, pushPublicKey } from '../services/push.js';
+import { pushFailure, pushPendingOffers, pushPublicKey, sendToUser } from '../services/push.js';
 import { checkPurchaseWatches, keepOffer, passOffer, savedOffers } from '../services/watches.js';
 import { SavedOffer } from '../models/SavedOffer.js';
 import { browseListings, LISTING_SORTS, listingDetail, searchCatalog, trackedFor, trackListing, untrackListing, type ListingSort } from '../services/csfloat-listings.js';
@@ -234,9 +234,16 @@ router.post(
     const p256dh = asText(req.body?.keys?.p256dh, 'La clave', 200);
     const auth = asText(req.body?.keys?.auth, 'La clave', 200);
     if (!endpoint.startsWith('https://')) throw new HttpError(400, 'El dispositivo no es válido.');
+    if (!pushPublicKey()) throw new HttpError(503, 'El servidor todavía no puede mandar avisos al móvil.');
     await PushSub.updateOne({ endpoint }, { $set: { userId, endpoint, p256dh, auth } }, { upsert: true });
-    const sent = await pushPendingOffers(userId);
-    res.json({ ok: true, sent });
+    const pending = await pushPendingOffers(userId);
+    if (req.body?.ping !== true) {
+      res.json({ ok: true, sent: pending });
+      return;
+    }
+    const probe = await sendToUser(userId, { title: 'Balance', body: 'El móvil ya recibe los avisos.', url: '/' });
+    if (probe.sent < 1) throw new HttpError(502, pushFailure(probe.error));
+    res.json({ ok: true, sent: probe.sent + pending });
   }),
 );
 
@@ -286,7 +293,7 @@ router.get(
   '/csfloat/catalog',
   asyncRoute(async (req, res) => {
     const query = asText(req.query.q, 'La búsqueda', 60, false);
-    res.json({ results: query.trim().length < 2 ? [] : await searchCatalog(query) });
+    res.json(query.trim().length < 2 ? { results: [], wear: null } : await searchCatalog(query));
   }),
 );
 

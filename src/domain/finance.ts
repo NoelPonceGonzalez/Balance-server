@@ -525,6 +525,30 @@ export function applyMovementToBooks(
   }
 
   let sign = cashSign(movement.type);
+  if (movement.type === 'adjustment' && movement.holdingId) {
+    const holding = next.holdings.find((item) => item.id === movement.holdingId);
+    if (!holding || holding.accountId !== primary.id) return { error: 'El activo no está en ese sitio.' };
+    if (movement.direction !== 'in' && movement.direction !== 'out') return { error: 'Hay que decir si la cantidad sube o baja.' };
+    const qty = movement.quantity ?? movement.amount;
+    if (!(qty > 0)) return { error: 'Indica la cantidad.' };
+    if (movement.direction === 'out' && qty - holding.quantity > 1e-8) return { error: 'No puedes quitar más cantidad de la que hay.' };
+    const delta = movement.direction === 'in' ? qty : -qty;
+    let costDelta: number | null = null;
+    if (movement.direction === 'out' && holding.costBasis != null && holding.quantity > 0) {
+      costDelta = roundMoney(-(holding.costBasis * (qty / holding.quantity)));
+      holding.costBasis = roundMoney(holding.costBasis + costDelta);
+    }
+    holding.quantity = roundQty(holding.quantity + delta);
+    return {
+      books: next,
+      effects: {
+        applied: true,
+        accountDeltas: [],
+        holding: { holdingId: holding.id, quantityDelta: roundQty(delta), costBasisDelta: costDelta, clearMarket: false },
+        costOfSold: null,
+      },
+    };
+  }
   if (movement.type === 'adjustment') {
     if (movement.direction !== 'in' && movement.direction !== 'out') return { error: 'El ajuste tiene que decir si el saldo sube o baja.' };
     sign = movement.direction === 'in' ? 1 : -1;

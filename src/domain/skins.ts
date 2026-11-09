@@ -47,6 +47,26 @@ export const SKIN_WEARS = [
   { wear: 'Battle-Scarred', label: 'Veterana de guerra', from: 0.45, to: 1 },
 ] as const;
 
+const WEAR_QUERY = [
+  { wear: 'Factory New', source: String.raw`\b(?:factory\s+new|fn)\b` },
+  { wear: 'Minimal Wear', source: String.raw`\b(?:minimal\s+wear|mw)\b` },
+  { wear: 'Field-Tested', source: String.raw`\b(?:field[-\s]?tested|ft)\b` },
+  { wear: 'Well-Worn', source: String.raw`\b(?:well[-\s]?worn|ww)\b` },
+  { wear: 'Battle-Scarred', source: String.raw`\b(?:battle[-\s]?scarred|bs)\b` },
+] as const;
+
+/** Separa el desgaste escrito en la búsqueda («Pandora Factory New») del nombre del modelo. */
+export function wearFromQuery(query: string): { wear: string | null; rest: string } {
+  let wear: string | null = null;
+  let rest = ` ${query} `;
+  for (const rule of WEAR_QUERY) {
+    const next = rest.replace(new RegExp(rule.source, 'gi'), ' ');
+    if (wear == null && next !== rest) wear = rule.wear;
+    rest = next;
+  }
+  return { wear, rest: rest.replace(/\s+/g, ' ').trim() };
+}
+
 export function wearOf(floatValue: number): string | null {
   if (!(floatValue >= 0 && floatValue <= 1)) return null;
   if (floatValue < 0.07) return 'Factory New';

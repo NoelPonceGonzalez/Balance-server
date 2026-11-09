@@ -73,6 +73,45 @@ export function transfersOf(people: { id: string; name: string; net: number }[])
   return transfers;
 }
 
+export interface BudgetPerson {
+  id: string;
+  pocket: number;
+  used: number;
+  left: number;
+}
+
+export interface BudgetBoard {
+  budget: number;
+  left: number;
+  people: BudgetPerson[];
+}
+
+/** Lo que lleva cada uno al llegar, menos su parte de los gastos que cuentan. Lo de fuera no baja el presupuesto. */
+export function budgetOf(
+  members: { id: string; pocket: number }[],
+  expenses: { amount: number; splitAmong?: string[]; counts?: boolean }[],
+): BudgetBoard {
+  const ids = members.map((member) => member.id);
+  const known = new Set(ids);
+  const used = new Map<string, number>(ids.map((id) => [id, 0]));
+  for (const expense of expenses) {
+    if (expense.counts === false) continue;
+    const amount = cents(expense.amount);
+    if (amount <= 0) continue;
+    const chosen = (expense.splitAmong || []).filter((id) => known.has(id));
+    const targets = chosen.length > 0 ? chosen : ids;
+    for (const [id, share] of give(amount, targets, () => 0)) used.set(id, (used.get(id) || 0) + share);
+  }
+  const people = members.map((member) => {
+    const pocket = Math.max(0, cents(member.pocket));
+    const spent = used.get(member.id) || 0;
+    return { id: member.id, pocket: pocket / 100, used: spent / 100, left: (pocket - spent) / 100 };
+  });
+  const budget = people.reduce((sum, person) => sum + cents(person.pocket), 0);
+  const left = people.reduce((sum, person) => sum + cents(person.left), 0);
+  return { budget: budget / 100, left: left / 100, people };
+}
+
 /** Lo puesto más lo pagado. Cada gasto se reparte entre las personas elegidas, o entre todas. */
 export function splitTrip(members: SplitPerson[], expenses: SplitExpense[]): SplitResult {
   const ids = members.map((member) => member.id);
