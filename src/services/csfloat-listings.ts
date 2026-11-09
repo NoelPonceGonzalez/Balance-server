@@ -134,10 +134,18 @@ function fold(value: string): string {
 async function catalog(): Promise<CatalogEntry[]> {
   if (catalogCache && Date.now() - catalogCache.at < 12 * 60 * 60_000) return catalogCache.entries;
   try {
-    const response = await fetch('https://csfloat.com/api/v1/schema', {
-      headers: { accept: 'application/json', 'user-agent': 'Mozilla/5.0' },
-      signal: AbortSignal.timeout(30_000),
-    });
+    let response: Response;
+    try {
+      response = await fetch('https://csfloat.com/api/v1/schema', {
+        headers: { accept: 'application/json', 'user-agent': 'Mozilla/5.0' },
+        signal: AbortSignal.timeout(20_000),
+      });
+    } catch {
+      response = await fetch('https://csfloat.com/api/v1/schema', {
+        headers: { accept: 'application/json', 'user-agent': 'Mozilla/5.0' },
+        signal: AbortSignal.timeout(20_000),
+      });
+    }
     if (!response.ok) return catalogCache?.entries ?? [];
     const data = (await response.json()) as {
       weapons?: Record<string, { name?: string; type?: string; paints?: Record<string, { index?: number; name?: string; min?: number; max?: number; normal_prices?: number[] }> }>;
