@@ -6,7 +6,7 @@ import { SkinWatch } from '../models/SkinWatch.js';
 import { TrackedListing } from '../models/TrackedListing.js';
 import { readCsfloatKey } from './csfloat-key.js';
 import { sendToUser } from './push.js';
-import { medianEur, pricedHistory, searchSkins, steamIcon, usdPerEur } from './skins.js';
+import { medianEur, pricedHistory, steamIcon, usdPerEur } from './skins.js';
 
 export const LISTING_SORTS = ['lowest_price', 'highest_price', 'lowest_float', 'highest_float', 'most_recent', 'best_deal'] as const;
 export type ListingSort = (typeof LISTING_SORTS)[number];
@@ -181,16 +181,7 @@ export async function searchCatalog(query: string): Promise<{ results: CatalogHi
   const parsed = wearFromQuery(query);
   const words = fold(parsed.rest).split(' ').filter(Boolean);
   if (!words.length) return { results: [], wear: parsed.wear };
-  const [entries, rate, steam] = await Promise.all([
-    catalog(),
-    usdPerEur(),
-    searchSkins(parsed.rest).catch(() => []),
-  ]);
-  const pictures = new Map<string, string>();
-  for (const hit of steam) {
-    if (!hit.image) continue;
-    pictures.set(fold(hit.name), hit.image);
-  }
+  const [entries, rate] = await Promise.all([catalog(), usdPerEur()]);
   const compact = words.join('');
   const results = entries
     .filter((entry) => words.every((word) => entry.folded.includes(word)) || entry.folded.replace(/ /g, '').includes(compact))
@@ -201,7 +192,7 @@ export async function searchCatalog(query: string): Promise<{ results: CatalogHi
       label: entry.label,
       kind: entry.kind,
       paintIndex: entry.paintIndex,
-      image: pictures.get(fold(entry.name)) || pictures.get(fold(entry.label)) || null,
+      image: null,
       wears: entry.wears.map((wear) => {
         const cents = entry.pricesUsd[WEARS.indexOf(wear as (typeof WEARS)[number])];
         return { wear, refEur: cents && rate ? roundMoney(cents / 100 / rate) : null };

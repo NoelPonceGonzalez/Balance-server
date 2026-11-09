@@ -151,7 +151,6 @@ export interface OpenAsk {
 }
 
 let csfloatListingsBlockedUntil = 0;
-let skinportCache: { at: number; rows: Map<string, { min: number | null; qty: number; url: string }> } | null = null;
 
 async function csfloatAsks(name: string, key: string | null, maxEur: number | null): Promise<OpenAsk[] | 'blocked' | 'unknown'> {
   if (!key) return 'blocked';
@@ -199,37 +198,7 @@ async function csfloatAsks(name: string, key: string | null, maxEur: number | nu
   });
 }
 
-async function skinportBoard(): Promise<Map<string, { min: number | null; qty: number; url: string }>> {
-  if (skinportCache && Date.now() - skinportCache.at < 8 * 60_000) return skinportCache.rows;
-  try {
-    const response = await fetch('https://api.skinport.com/v1/items?app_id=730&currency=EUR&tradable=0', {
-      headers: { accept: 'application/json', 'user-agent': 'Balance/1.0' },
-      signal: AbortSignal.timeout(20_000),
-    });
-    if (!response.ok) return skinportCache?.rows ?? new Map();
-    const data = (await response.json()) as unknown;
-    const rows = new Map<string, { min: number | null; qty: number; url: string }>();
-    if (Array.isArray(data)) {
-      for (const row of data) {
-        if (!row || typeof row !== 'object') continue;
-        const item = row as { market_hash_name?: string; min_price?: number | null; quantity?: number; item_page?: string; market_page?: string };
-        if (!item.market_hash_name) continue;
-        const min = typeof item.min_price === 'number' && item.min_price > 0 ? item.min_price : null;
-        rows.set(item.market_hash_name, {
-          min,
-          qty: typeof item.quantity === 'number' ? item.quantity : 0,
-          url: item.item_page || item.market_page || 'https://skinport.com/',
-        });
-      }
-    }
-    skinportCache = { at: Date.now(), rows };
-    return rows;
-  } catch {
-    return skinportCache?.rows ?? new Map();
-  }
-}
-
-/** Ofertas abiertas. `null` significa que CSFloat no ha contestado: no se inventa otra tienda ni se olvida lo ya avisado. */
+/** Ofertas abiertas en CSFloat. `null` significa que no ha contestado: no se inventa otra tienda ni se olvida lo ya avisado. */
 export async function openAsks(names: string[], key: string | null = null, maxEur = new Map<string, number>()): Promise<Map<string, OpenAsk[] | null>> {
   const out = new Map<string, OpenAsk[] | null>();
   const unique = [...new Set(names)];
@@ -247,30 +216,15 @@ export async function openAsks(names: string[], key: string | null = null, maxEu
           out.set(name, null);
           continue;
         }
-        if (asks.length) out.set(name, asks);
+        out.set(name, asks);
       } catch (error) {
         console.error('ofertas', error instanceof Error ? error.message : error);
         out.set(name, null);
       }
     }
   }
-  const missing = unique.filter((name) => !out.has(name));
-  if (!missing.length) return out;
-  const board = await skinportBoard();
-  for (const name of missing) {
-    const row = board.get(name);
-    if (!row || row.qty < 1 || row.min == null) {
-      out.set(name, []);
-      continue;
-    }
-    out.set(name, [{
-      market: 'Skinport',
-      id: `skinport:${row.min}`,
-      eur: row.min,
-      url: row.url,
-      floatValue: null,
-      image: null,
-    }]);
+  for (const name of unique) {
+    if (!out.has(name)) out.set(name, null);
   }
   return out;
 }
@@ -289,6 +243,89 @@ export interface SkinHit {
   phases: { id: string; label: string; paintIndex: number }[];
 }
 
+const SCHEMA_WEARS = ['Factory New', 'Minimal Wear', 'Field-Tested', 'Well-Worn', 'Battle-Scarred'] as const;
+const SCHEMA_RANGES: [number, number][] = [[0, 0.07], [0.07, 0.15], [0.15, 0.38], [0.38, 0.45], [0.45, 1]];
+
+interface SchemaPaint {
+  name: string;
+  folded: string;
+  wears: { wear: string; cents: number; volume: number }[];
+}
+
+let schemaCache: { at: number; paints: SchemaPaint[] } | null = null;
+
+function foldName(value: string): string {
+  return value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9 ]+/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+/** Precios de CSFloat por desgaste, en céntimos de dólar. No se mira el mercado de Steam. */
+async function schemaPaints(): Promise<SchemaPaint[]> {
+  if (schemaCache && Date.now() - schemaCache.at < 12 * 60 * 60_000) return schemaCache.paints;
+  try {
+    const response = await fetch('https://csfloat.com/api/v1/schema', {
+      headers: { accept: 'application/json', 'user-agent': 'Mozilla/5.0' },
+      signal: AbortSignal.timeout(30_000),
+    });
+    if (!response.ok) return schemaCache?.paints ?? [];
+    const data = (await response.json()) as {
+      weapons?: Record<string, { name?: string; type?: string; paints?: Record<string, { name?: string; min?: number; max?: number; normal_prices?: number[]; normal_volume?: number[] }> }>;
+    };
+    const paints: SchemaPaint[] = [];
+    for (const weapon of Object.values(data.weapons || {})) {
+      if (!weapon?.name || !weapon.paints) continue;
+      const star = weapon.type === 'Gloves' || weapon.type === 'Knives' ? '★ ' : '';
+      for (const paint of Object.values(weapon.paints)) {
+        if (!paint?.name) continue;
+        const low = typeof paint.min === 'number' ? paint.min : 0;
+        const high = typeof paint.max === 'number' ? paint.max : 1;
+        const wears = SCHEMA_WEARS.flatMap((wear, index) => {
+          if (!(SCHEMA_RANGES[index][0] < high && SCHEMA_RANGES[index][1] > low)) return [];
+          const cents = paint.normal_prices?.[index];
+          if (!(typeof cents === 'number' && cents > 0)) return [];
+          const volume = paint.normal_volume?.[index];
+          return [{ wear, cents, volume: typeof volume === 'number' && volume > 0 ? volume : 0 }];
+        });
+        if (!wears.length) continue;
+        const name = `${star}${weapon.name} | ${paint.name}`;
+        if (!isSkinMarketName(name)) continue;
+        paints.push({ name, folded: foldName(name), wears });
+      }
+    }
+    if (paints.length) schemaCache = { at: Date.now(), paints };
+    return paints;
+  } catch {
+    return schemaCache?.paints ?? [];
+  }
+}
+
+export interface CsfloatBoardRow {
+  name: string;
+  priceEur: number;
+}
+
+/** Las skins que más se mueven en CSFloat, con el precio de ese desgaste. */
+export async function csfloatBoard(): Promise<CsfloatBoardRow[]> {
+  const [paints, rate] = await Promise.all([schemaPaints(), usdPerEur()]);
+  if (!rate) return [];
+  const rows = paints.flatMap((paint) => {
+    const best = [...paint.wears].sort((a, b) => b.volume - a.volume)[0];
+    if (!best) return [];
+    return [{ name: `${paint.name} (${best.wear})`, priceEur: roundMoney(best.cents / 100 / rate), volume: best.volume }];
+  });
+  return rows.sort((a, b) => b.volume - a.volume).slice(0, 8).map(({ name, priceEur }) => ({ name, priceEur }));
+}
+
+/** Precio de CSFloat para cada desgaste de una skin. Vacío si el catálogo no la tiene. */
+export async function csfloatWearPrices(base: string): Promise<{ wear: string; priceEur: number }[]> {
+  const wanted = foldName(skinBaseName(base));
+  if (!wanted) return [];
+  const [paints, rate] = await Promise.all([schemaPaints(), usdPerEur()]);
+  if (!rate) return [];
+  const paint = paints.find((row) => row.folded === wanted);
+  if (!paint) return [];
+  return paint.wears.map((row) => ({ wear: row.wear, priceEur: roundMoney(row.cents / 100 / rate) }));
+}
+
 const searchCache = new Map<string, { at: number; hits: SkinHit[] }>();
 
 export async function searchSkins(query: string): Promise<SkinHit[]> {
@@ -296,27 +333,19 @@ export async function searchSkins(query: string): Promise<SkinHit[]> {
   if (key.length < 2) return [];
   const cached = searchCache.get(key);
   if (cached && Date.now() - cached.at < 10 * 60_000) return cached.hits;
-  const response = await fetch(`https://steamcommunity.com/market/search/render/?query=${encodeURIComponent(query.trim())}&appid=730&norender=1&count=20`, {
-    headers: { accept: 'application/json', 'user-agent': 'Mozilla/5.0' },
-    signal: AbortSignal.timeout(12_000),
-  });
-  if (!response.ok) throw new Error(`Steam ha respondido ${response.status}.`);
-  const data = (await response.json()) as { results?: { hash_name?: string; asset_description?: { icon_url?: string } }[] };
-  const grouped = new Map<string, SkinHit>();
-  for (const row of data.results || []) {
-    const hash = skinBaseName(String(row.hash_name || ''));
-    if (!isSkinMarketName(hash)) continue;
-    const wear = String(row.hash_name || '').match(/\((Factory New|Minimal Wear|Field-Tested|Well-Worn|Battle-Scarred)\)$/i)?.[1] || '';
-    const image = steamIcon(row.asset_description?.icon_url);
-    const current = grouped.get(hash);
-    if (current) {
-      if (wear && !current.wears.includes(wear)) current.wears.push(wear);
-      if (!current.image && image) current.image = image;
-    } else {
-      grouped.set(hash, { name: hash, image, wears: wear ? [wear] : [], phases: phasesFor(hash) });
-    }
-  }
-  const hits = [...grouped.values()].slice(0, 8);
+  const words = foldName(query).split(' ').filter(Boolean);
+  if (!words.length) return [];
+  const paints = await schemaPaints();
+  const compact = words.join('');
+  const hits = paints
+    .filter((paint) => words.every((word) => paint.folded.includes(word)) || paint.folded.replace(/ /g, '').includes(compact))
+    .slice(0, 8)
+    .map((paint) => ({
+      name: paint.name,
+      image: null,
+      wears: paint.wears.map((row) => row.wear),
+      phases: phasesFor(paint.name),
+    }));
   searchCache.set(key, { at: Date.now(), hits });
   return hits;
 }

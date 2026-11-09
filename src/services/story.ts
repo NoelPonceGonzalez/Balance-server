@@ -1,7 +1,7 @@
 import { resolveSkinLink, seriesMove, skinBaseName, SKIN_WEARS, wearOf } from '../domain/skins.js';
 import { roundMoney } from '../domain/finance.js';
 import { Holding } from '../models/Holding.js';
-import { medianEur, pricedHistory } from './skins.js';
+import { csfloatWearPrices, medianEur, pricedHistory } from './skins.js';
 
 export interface StoryPoint {
   at: string;
@@ -215,21 +215,30 @@ export async function itemStory(userId: string, input: { kind: string; key: stri
       const context = await skinContext(userId, input.key, input.name);
       if (context.base) {
         const board = await wearBoard(context.base, context.paintIndex, context.yours);
+        const catalog = board.floats.length ? [] : await csfloatWearPrices(context.base);
+        const floats = board.floats.length
+          ? board.floats
+          : catalog.flatMap((row) => {
+              const band = SKIN_WEARS.find((item) => item.wear === row.wear);
+              if (!band) return [];
+              return [{ label: band.label, range: rangeText(band.from, band.to), priceEur: row.priceEur, sales: 0, yours: context.yours === row.wear }];
+            });
         const move = spanChange(board.series, 'en las ventas');
-        return {
-          series: board.series,
-          ...move,
-          floats: board.floats,
-          note: 'El precio de cada float es la mediana de las ventas recientes. La gráfica y el porcentaje son ese desgaste, de la primera venta a la última.',
-        };
+        const note = board.series.length >= 2
+          ? 'El precio de cada float es la mediana de las ventas de CSFloat. La gráfica y el porcentaje son ese desgaste, de la primera venta a la última.'
+          : 'El precio es el de CSFloat. Las ventas de estos días no han llegado, así que no hay línea.';
+        return { series: board.series, ...move, floats, note };
       }
       const sales = context.commodity ? await pricedHistory(context.commodity, null) : [];
       const series = sales.map((sale) => ({ at: sale.at, eur: sale.eur })).sort((a, b) => a.at.localeCompare(b.at));
       const move = spanChange(series, 'en las ventas');
-      return { series, ...move, floats: [], note: 'Ventas recientes pasadas a euros. La gráfica y el porcentaje van de la primera a la última. Una caja no tiene float.' };
+      const note = series.length >= 2
+        ? 'Ventas de CSFloat pasadas a euros. La gráfica y el porcentaje van de la primera a la última.'
+        : 'El precio es el de CSFloat. Las ventas de estos días no han llegado, así que no hay línea.';
+      return { series, ...move, floats: [], note };
     }
     if (input.kind === 'tf2') {
-      return empty('Steam no manda el histórico de TF2, así que no hay gráfica. El precio de la lista es el de ahora.');
+      return empty('TF2 no está en CSFloat, así que no pinto un precio ni una gráfica.');
     }
   } catch {
     return empty('La fuente no ha mandado el histórico. El precio de la lista sigue siendo el último real.');

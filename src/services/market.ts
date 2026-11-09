@@ -25,7 +25,7 @@ import {
 } from '../domain/market.js';
 import { recordSnapshot } from './ledger.js';
 import { resolveSkinLink, skinBaseName } from '../domain/skins.js';
-import { scheduleSkinRefresh, searchSkins } from './skins.js';
+import { csfloatBoard, scheduleSkinRefresh, searchSkins } from './skins.js';
 import { sendToUser } from './push.js';
 import { checkPurchaseWatches, offerIdentity, purchasesFor } from './watches.js';
 import { checkSkinWatches, checkTrackedListings } from './csfloat-listings.js';
@@ -617,7 +617,7 @@ async function refreshBoard(fx: Record<string, number>) {
   ];
   const next = [...cryptos, ...listed];
   if (next.length) boardSlots = next;
-  await refreshGames(fx);
+  await refreshGames();
 }
 
 async function fillListed(
@@ -650,62 +650,24 @@ async function fillListed(
   return slots.filter((slot): slot is BoardSlot => slot != null);
 }
 
-async function refreshGames(fx: Record<string, number>) {
+async function refreshGames() {
   if (gameRows.length && Date.now() - gameAt < 10 * 60_000) return;
-  const usd = fx.USD;
-  const games = [
-    { kind: 'cs2' as const, appid: 730 },
-    { kind: 'tf2' as const, appid: 440 },
-  ];
-  const rows: GameRow[] = [];
-  for (const game of games) {
-    try {
-      const data = (await readJson(
-        `https://steamcommunity.com/market/search/render/?query=&start=0&count=6&norender=1&appid=${game.appid}&sort_column=popular&sort_dir=desc`,
-        { 'user-agent': UA, accept: 'application/json' },
-      )) as {
-        results?: {
-          name?: string;
-          hash_name?: string;
-          sell_price?: number;
-          sell_price_text?: string;
-          app_icon?: string;
-          asset_description?: { icon_url?: string };
-        }[];
-      };
-      for (const row of (data.results || []).slice(0, 6)) {
-        const cents = row.sell_price;
-        if (!(typeof cents === 'number' && cents > 0)) continue;
-        const text = row.sell_price_text || '';
-        const amount = cents / 100;
-        const priceEur = text.includes('€') ? amount : usd > 0 ? amount / usd : null;
-        if (priceEur == null) continue;
-        const name = row.hash_name || row.name || '';
-        if (!name) continue;
-        rows.push({
-          key: `${game.kind}:${name}`,
-          kind: game.kind,
-          name,
-          image: steamPicture(row.asset_description?.icon_url),
-          appIcon: row.app_icon && row.app_icon.startsWith('https://') ? row.app_icon : null,
-          priceEur: roundMoney(priceEur),
-          fetchedAt: new Date().toISOString(),
-        });
-      }
-    } catch (error) {
-      lastError = error instanceof Error ? error.message : 'Steam no responde.';
-    }
-  }
-  if (rows.length) {
-    gameRows = rows;
+  try {
+    const board = await csfloatBoard();
+    if (!board.length) return;
+    gameRows = board.map((row) => ({
+      key: `cs2:${row.name}`,
+      kind: 'cs2' as const,
+      name: row.name,
+      image: null,
+      appIcon: null,
+      priceEur: row.priceEur,
+      fetchedAt: new Date().toISOString(),
+    }));
     gameAt = Date.now();
+  } catch (error) {
+    console.error('csfloat', error instanceof Error ? error.message : error);
   }
-}
-
-function steamPicture(icon: string | undefined): string | null {
-  if (!icon || icon.length > 500 || /[\s"'<>]/.test(icon)) return null;
-  if (icon.startsWith('https://')) return icon;
-  return `https://community.cloudflare.steamstatic.com/economy/image/${icon}`;
 }
 
 export async function ensureFresh() {
@@ -957,7 +919,7 @@ function gameTape(kind: 'cs2' | 'tf2') {
     name: row.name,
     symbol: kind === 'cs2' ? 'CS2' : 'TF2',
     image: row.image,
-    sourceLabel: 'Steam',
+    sourceLabel: 'CSFloat',
     priceEur: row.priceEur,
     changePct: null,
     changeLabel: '24 h',

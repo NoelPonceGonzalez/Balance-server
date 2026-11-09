@@ -224,7 +224,7 @@ export async function purchasesFor(userId: string) {
   return rows.map((row) => {
     const price = row.lastPriceEur;
     const under = price != null && price <= row.below;
-    const place = row.place || 'Skinport';
+    const place = row.place || 'CSFloat';
     return {
       id: String(row._id),
       label: row.label,
