@@ -639,6 +639,8 @@ export interface SavingsPlanInput {
   settled?: { key: string; done: boolean; amount: number }[];
   /** Los fijos de este día o anteriores ya están dentro del efectivo. */
   includedUntil?: string;
+  /** El check ya está en el saldo de la cartera: se enseña y no se suma otra vez. */
+  mirrored?: boolean;
 }
 
 export interface PlanMonthLine {
@@ -781,6 +783,11 @@ function fixedAbsorbed(plan: SavingsPlanInput, key: string | undefined, day: str
 
 function ledgerEvents(plan: SavingsPlanInput, fromDay: string, endDay: string, today: string): LedgerEvent[] {
   const events: LedgerEvent[] = [];
+  const seal = (absorbed: boolean, paid: boolean) => {
+    const on = absorbed || paid;
+    if (plan.mirrored && on) return { absorbed: true, paid: true };
+    return { absorbed, paid: on };
+  };
   for (let day = fromDay; day <= endDay; day = addDays(day, 1)) {
     const dim = lastDayOfMonth(day);
     const dueSavings = Math.min(savingsAnchor(plan), dim);
@@ -797,9 +804,8 @@ function ledgerEvents(plan: SavingsPlanInput, fromDay: string, endDay: string, t
         delta: amount,
         tone: 'in',
         markKey,
-        paid: absorbed || fixedPaid(plan, markKey, day, today),
+        ...seal(absorbed, fixedPaid(plan, markKey, day, today)),
         automatic: true,
-        absorbed,
       });
     }
     if (day < plan.startDate) continue;
@@ -817,9 +823,8 @@ function ledgerEvents(plan: SavingsPlanInput, fromDay: string, endDay: string, t
           delta: incoming ? amount : -amount,
           tone: incoming ? 'in' : 'out',
           markKey,
-          paid: absorbed || fixedPaid(plan, markKey, day, today, item.paidDates),
+          ...seal(absorbed, fixedPaid(plan, markKey, day, today, item.paidDates)),
           automatic: true,
-          absorbed,
         });
       }
     }
@@ -837,9 +842,8 @@ function ledgerEvents(plan: SavingsPlanInput, fromDay: string, endDay: string, t
         delta: incoming ? amount : -amount,
         tone: incoming ? 'in' : 'out',
         markKey,
-        paid: absorbed || fixedPaid(plan, markKey, day, today, item.paidDates),
+        ...seal(absorbed, fixedPaid(plan, markKey, day, today, item.paidDates)),
         automatic: true,
-        absorbed,
       });
     }
     for (const expense of plan.plannedExpenses) {
@@ -855,9 +859,8 @@ function ledgerEvents(plan: SavingsPlanInput, fromDay: string, endDay: string, t
           delta: -amount,
           tone: 'out',
           markKey,
-          paid: absorbed || expense.paid === true || (automatic && fixedPaid(plan, markKey, day, today)),
+          ...seal(absorbed, expense.paid === true || (automatic && fixedPaid(plan, markKey, day, today))),
           automatic,
-          absorbed,
         });
       }
     }
@@ -872,7 +875,7 @@ function ledgerEvents(plan: SavingsPlanInput, fromDay: string, endDay: string, t
         delta: income.amount,
         tone: 'in',
         markKey: income.id ? `income:${income.id}` : undefined,
-        paid: income.paid === true || (automatic && fixedPaid(plan, income.id ? `income:${income.id}` : undefined, day, today)),
+        ...seal(false, income.paid === true || (automatic && fixedPaid(plan, income.id ? `income:${income.id}` : undefined, day, today))),
         automatic,
       });
     }
@@ -981,13 +984,18 @@ interface SimOptions {
   monthlySavings: number;
   includeExpected: boolean;
   stopWhenHit?: boolean;
+  /** Hasta este día, un apunte solo mueve el saldo si la persona lo ha confirmado. */
+  settledThrough?: string;
 }
 
-function eventAmount(events: PlanEvent[], day: string, includeExpected: boolean): number {
+function eventAmount(events: PlanEvent[], day: string, includeExpected: boolean, settledThrough?: string): number {
   let total = 0;
+  const strict = Boolean(settledThrough && day <= settledThrough);
   for (const event of events) {
     if (event.date.slice(0, 10) !== day) continue;
-    if (event.status === 'expected' && !includeExpected) continue;
+    if (event.status === 'expected') {
+      if (!includeExpected || (strict && event.paid !== true)) continue;
+    } else if (strict && event.paid !== true) continue;
     total += event.amount;
   }
   return total;
@@ -1063,6 +1071,11 @@ function walk(
   const monthEnds = new Map<string, number>();
   // El primer ahorro no cae el mismo día de inicio: el saldo inicial ya es el punto de partida.
   const firstSavings = plan.startDate;
+  const counts = (day: string, explicit: boolean, row: { done: boolean } | undefined) => {
+    if (row?.done === false) return false;
+    if (!options.settledThrough || day > options.settledThrough) return true;
+    return explicit;
+  };
 
   for (let day = fromDay; day <= endDay; ) {
     const dim = lastDayOfMonth(day);
@@ -1070,7 +1083,7 @@ function walk(
     if (day > firstSavings && dayOfMonth(day) === recurringDay && !plan.savingsSkipped?.includes(day)) {
       const row = confirmed(plan, `savings:${day}`);
       const inside = Boolean(plan.includedUntil && day <= plan.includedUntil && row?.done !== false);
-      if (!inside) {
+      if (!inside && counts(day, row?.done === true || plan.savingsPaid?.includes(day) === true, row)) {
         balance = roundMoney(balance + (row?.done && row.amount > 0 ? row.amount : options.monthlySavings));
         savingsEvents += 1;
       }
@@ -1080,7 +1093,7 @@ function walk(
       const key = item.id ? `recurring:${item.id}:${day}` : '';
       const row = confirmed(plan, key);
       const inside = Boolean(key && plan.includedUntil && day <= plan.includedUntil && row?.done !== false);
-      if (day >= plan.startDate && dayOfMonth(day) === due && row?.done !== false && !inside) {
+      if (day >= plan.startDate && dayOfMonth(day) === due && !inside && counts(day, row?.done === true || item.paidDates?.includes(day) === true, row)) {
         const amount = row?.done && row.amount > 0 ? row.amount : item.amount;
         balance = roundMoney(balance + (item.direction === 'in' ? amount : -amount));
       }
@@ -1090,7 +1103,7 @@ function walk(
         const key = item.id ? `interval:${item.id}:${day}` : '';
         const row = confirmed(plan, key);
         const inside = Boolean(key && plan.includedUntil && day <= plan.includedUntil && row?.done !== false);
-        if (intervalHits(item, day) && row?.done !== false && !inside) {
+        if (intervalHits(item, day) && !inside && counts(day, row?.done === true || item.paidDates?.includes(day) === true, row)) {
           const amount = row?.done && row.amount > 0 ? row.amount : item.amount;
           balance = roundMoney(balance + (item.direction === 'in' ? amount : -amount));
         }
@@ -1100,14 +1113,13 @@ function walk(
       for (const expense of plan.plannedExpenses) {
         if (expense.absorbed) continue;
         const key = expense.id ? `expense:${expense.id}` : '';
-        if (key && confirmed(plan, key)?.done === false) continue;
-        if (expense.date.slice(0, 10) === day) {
-          const row = confirmed(plan, key);
+        const row = confirmed(plan, key);
+        if (expense.date.slice(0, 10) === day && counts(day, expense.paid === true || row?.done === true, row)) {
           const amount = row?.done && row.amount > 0 ? row.amount : expense.amount;
           balance = roundMoney(balance - amount);
         }
       }
-      balance = roundMoney(balance + eventAmount(plan.incomes, day, options.includeExpected));
+      balance = roundMoney(balance + eventAmount(plan.incomes, day, options.includeExpected, options.settledThrough));
     }
     if (hit == null && target != null && balance >= target) hit = day;
     if (hit && options.stopWhenHit) {
@@ -1135,9 +1147,16 @@ function monthDistance(fromDay: string, toDay: string): number {
 export function forecastPlan(plan: SavingsPlanInput, realBalance: number | null, today: string): PlanForecast {
   const notes: string[] = [];
   notes.push('Los ingresos esperados no forman parte del patrimonio real hasta que los registres como recibidos.');
+  const gate = Array.isArray(plan.settled) ? today : undefined;
+  const pace = (monthlySavings: number, includeExpected: boolean, stopWhenHit = false): SimOptions => ({
+    monthlySavings,
+    includeExpected,
+    ...(stopWhenHit ? { stopWhenHit: true } : {}),
+    settledThrough: gate,
+  });
 
-  const confirmed = walk(plan, plan.openingBalance, plan.startDate, today, { monthlySavings: plan.monthlySavings, includeExpected: false }, null);
-  const withExpected = walk(plan, plan.openingBalance, plan.startDate, today, { monthlySavings: plan.monthlySavings, includeExpected: true }, null);
+  const confirmed = walk(plan, plan.openingBalance, plan.startDate, today, pace(plan.monthlySavings, false), null);
+  const withExpected = walk(plan, plan.openingBalance, plan.startDate, today, pace(plan.monthlySavings, true), null);
 
   const plannedToday = confirmed.endBalance;
   const plannedWithExpectedToday = withExpected.endBalance;
@@ -1145,7 +1164,7 @@ export function forecastPlan(plan: SavingsPlanInput, realBalance: number | null,
   const balanceYesterday =
     yesterday < plan.startDate
       ? roundMoney(plan.openingBalance)
-      : walk(plan, plan.openingBalance, plan.startDate, yesterday, { monthlySavings: plan.monthlySavings, includeExpected: true }, null).endBalance;
+      : walk(plan, plan.openingBalance, plan.startDate, yesterday, pace(plan.monthlySavings, true), null).endBalance;
   const real = realBalance;
   const deviationEur = real == null ? 0 : roundMoney(real - plannedToday);
   const compliancePct = real == null || plannedToday === 0 ? null : roundMoney((real / plannedToday) * 100, 1);
@@ -1158,7 +1177,7 @@ export function forecastPlan(plan: SavingsPlanInput, realBalance: number | null,
   const baseForward =
     real == null || !targetStillAhead
       ? null
-      : walk(plan, real, tomorrow, plan.targetDate, { monthlySavings: plan.monthlySavings, includeExpected: false }, null);
+      : walk(plan, real, tomorrow, plan.targetDate, pace(plan.monthlySavings, false), null);
 
   let extraMonthlyToRecover: number | null = null;
   let gapAtTarget = 0;
@@ -1182,13 +1201,13 @@ export function forecastPlan(plan: SavingsPlanInput, realBalance: number | null,
       ? null
       : real >= plan.targetAmount || plannedToday >= plan.targetAmount
         ? { hit: today }
-        : walk(plan, plannedToday, tomorrow, searchEnd, { monthlySavings: plan.monthlySavings, includeExpected: false, stopWhenHit: true }, plan.targetAmount);
+        : walk(plan, plannedToday, tomorrow, searchEnd, pace(plan.monthlySavings, false, true), plan.targetAmount);
   const estimatedExpected =
     real == null
       ? null
       : real >= plan.targetAmount || plannedWithExpectedToday >= plan.targetAmount
         ? { hit: today }
-        : walk(plan, plannedWithExpectedToday, tomorrow, searchEnd, { monthlySavings: plan.monthlySavings, includeExpected: true, stopWhenHit: true }, plan.targetAmount);
+        : walk(plan, plannedWithExpectedToday, tomorrow, searchEnd, pace(plan.monthlySavings, true, true), plan.targetAmount);
 
   if (estimated && estimated.hit == null && real != null && real < plan.targetAmount) {
     notes.push('Con el ahorro y los gastos confirmados, el objetivo no se alcanza en 40 años.');
@@ -1200,8 +1219,8 @@ export function forecastPlan(plan: SavingsPlanInput, realBalance: number | null,
   const horizon = arrival && arrival >= plan.startDate ? arrival : (plan.targetDate >= plan.startDate ? plan.targetDate : plan.startDate);
 
   const seriesEnd = horizon > today ? horizon : today;
-  const seriesWalk = walk(plan, plan.openingBalance, plan.startDate, seriesEnd, { monthlySavings: plan.monthlySavings, includeExpected: false }, null);
-  const seriesExpected = walk(plan, plan.openingBalance, plan.startDate, seriesEnd, { monthlySavings: plan.monthlySavings, includeExpected: true }, null);
+  const seriesWalk = walk(plan, plan.openingBalance, plan.startDate, seriesEnd, pace(plan.monthlySavings, false), null);
+  const seriesExpected = walk(plan, plan.openingBalance, plan.startDate, seriesEnd, pace(plan.monthlySavings, true), null);
   const months = new Set([...seriesWalk.monthEnds.keys(), ...seriesExpected.monthEnds.keys()]);
   const series = [...months].sort().map((month) => ({
     month,
@@ -1215,13 +1234,13 @@ export function forecastPlan(plan: SavingsPlanInput, realBalance: number | null,
         ? { endBalance: 0, hit: null, savingsEvents: 0, monthEnds: new Map<string, number>() }
         : !targetStillAhead
           ? { endBalance: real, hit: null, savingsEvents: 0, monthEnds: new Map<string, number>() }
-          : walk(plan, real, tomorrow, plan.targetDate, { monthlySavings: scenario.monthlySavings, includeExpected: false }, null);
+          : walk(plan, real, tomorrow, plan.targetDate, pace(scenario.monthlySavings, false), null);
     const found =
       real == null
         ? null
         : real >= plan.targetAmount
           ? { hit: today }
-          : walk(plan, real, tomorrow, searchEnd, { monthlySavings: scenario.monthlySavings, includeExpected: false, stopWhenHit: true }, plan.targetAmount);
+          : walk(plan, real, tomorrow, searchEnd, pace(scenario.monthlySavings, false, true), plan.targetAmount);
     return {
       id: scenario.id,
       name: scenario.name,

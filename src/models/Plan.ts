@@ -147,6 +147,21 @@ const PlanSchema = new mongoose.Schema(
       default: [],
     },
     linkedAccountIds: [{ type: mongoose.Schema.Types.ObjectId, ref: 'PatAccount' }],
+    cashMoves: {
+      type: [
+        new mongoose.Schema(
+          {
+            key: { type: String, required: true },
+            movementId: { type: String, required: true },
+            amount: { type: Number, required: true },
+            date: { type: String, required: true },
+            direction: { type: String, enum: ['in', 'out'], required: true },
+          },
+          { _id: false },
+        ),
+      ],
+      default: [],
+    },
     manualRealBalance: { type: Number, default: null },
     recurring: {
       type: [
@@ -156,6 +171,7 @@ const PlanSchema = new mongoose.Schema(
             amount: { type: Number, required: true },
             dayOfMonth: { type: Number, required: true },
             direction: { type: String, enum: ['in', 'out'], default: 'out' },
+            paidDates: { type: [String], default: [] },
           },
           { _id: true },
         ),
@@ -171,6 +187,7 @@ const PlanSchema = new mongoose.Schema(
             everyWeeks: { type: Number, required: true },
             startDate: { type: String, required: true },
             direction: { type: String, enum: ['in', 'out'], default: 'out' },
+            paidDates: { type: [String], default: [] },
           },
           { _id: true },
         ),

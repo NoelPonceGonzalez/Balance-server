@@ -8,8 +8,8 @@ import { Notification } from '../models/Notification.js';
 import { authenticateToken, type AuthRequest } from '../middleware/auth.js';
 import { asyncRoute, HttpError } from '../http.js';
 import { asDay, asId, asMoney, asOptionalMoney, asPicture, asReceipt, asText } from '../validate.js';
-import { roundMoney, todayKey } from '../domain/finance.js';
-import { createMovement, deleteMovement, forecastForPlan, forecastPlanList } from '../services/ledger.js';
+import { todayKey } from '../domain/finance.js';
+import { createMovement, deleteMovement, forecastForPlan, forecastPlanList, releasePlanCash } from '../services/ledger.js';
 import { listDueFixed, remindDuePayments } from '../services/plan-reminders.js';
 
 const router = Router();
@@ -230,23 +230,15 @@ router.post(
     if (!plan.settled) plan.set('settled', []);
     if (plan.settled.some((item) => item.key === key)) throw new HttpError(400, 'Eso ya está confirmado.');
     const [kind, id, occurrence] = key.split(':');
-    let direction: 'in' | 'out' = 'out';
-    let day = '';
-    let planned = 0;
     if (kind === 'expense') {
       const item = plan.plannedExpenses.find((row) => String(row._id) === id);
       if (!item) throw new HttpError(404, 'Ese fijo no está en el plan.');
-      day = String(item.date).slice(0, 10);
-      planned = item.amount;
-      direction = 'out';
       const amount = done ? asMoney(body.amount, 'El importe') : item.amount;
       if (done) item.amount = amount;
       item.paid = done;
       plan.settled.push({ key, done, amount: done ? amount : 0 });
     } else if (kind === 'savings') {
-      day = asDay(id, 'La fecha');
-      planned = plan.monthlySavings;
-      direction = 'in';
+      const day = asDay(id, 'La fecha');
       const amount = done ? asMoney(body.amount, 'El importe') : 0;
       if (done) {
         const kept = plan.savingsAdjustments.filter((item) => item.date !== day);
@@ -264,30 +256,11 @@ router.post(
       const list = kind === 'recurring' ? plan.recurring : plan.intervals;
       const item = list.find((row) => String(row._id) === id);
       if (!item) throw new HttpError(404, 'Ese fijo no está en el plan.');
-      day = asDay(occurrence, 'La fecha');
-      planned = item.amount;
-      direction = item.direction === 'in' ? 'in' : 'out';
+      asDay(occurrence, 'La fecha');
       const amount = done ? asMoney(body.amount, 'El importe') : 0;
       plan.settled.push({ key, done, amount });
     } else {
       throw new HttpError(400, 'No se reconoce ese fijo.');
-    }
-    const user = await User.findById(userId).select('timezone');
-    const zone = user?.timezone || 'Europe/Madrid';
-    const links = (plan.linkedAccountIds || []).map(String);
-    if (plan.kind === 'liquidez' && links.length === 1) {
-      const account = await Account.findOne({ _id: links[0], userId });
-      const updated = account?.balanceUpdatedAt ? todayKey(zone, account.balanceUpdatedAt) : '';
-      if (account && account.currency === 'EUR' && updated && day <= updated) {
-        const actual = done ? asMoney(body.amount, 'El importe') : 0;
-        const diff = actual - planned;
-        const delta = done ? (direction === 'out' ? -diff : diff) : direction === 'out' ? planned : -planned;
-        if (delta !== 0) {
-          account.balance = roundMoney(account.balance + delta);
-          account.balanceUpdatedAt = new Date();
-          await account.save();
-        }
-      }
     }
     await plan.save();
     await Notification.deleteMany({ userId, quoteKey: `plan-due:${plan._id}:${key}` });
@@ -366,12 +339,15 @@ router.post(
       const item = list.find((row) => String(row._id) === id);
       if (!item) throw new HttpError(404, 'Ese apunte no está en el plan.');
       item.paid = paid;
+      remember(plan, key, paid, item.amount);
     } else if (kind === 'savings') {
       const day = asDay(id, 'La fecha');
       const dates = new Set(plan.savingsPaid || []);
       if (paid) dates.add(day);
       else dates.delete(day);
       plan.savingsPaid = [...dates];
+      const adjustment = (plan.savingsAdjustments || []).find((item) => item.date.slice(0, 10) === day);
+      remember(plan, key, paid, adjustment?.amount || plan.monthlySavings);
     } else if (kind === 'recurring' || kind === 'interval') {
       const list = kind === 'recurring' ? plan.recurring : plan.intervals;
       const item = list.find((row) => String(row._id) === id);
@@ -381,6 +357,7 @@ router.post(
       if (paid) dates.add(day);
       else dates.delete(day);
       item.paidDates = [...dates];
+      remember(plan, key, paid, item.amount);
     } else {
       throw new HttpError(400, 'No se reconoce ese apunte.');
     }
@@ -776,6 +753,7 @@ router.delete(
       return;
     }
     if (String(plan.userId) !== userId) throw new HttpError(404, 'Ese plan no existe.');
+    await releasePlanCash(userId, String(plan._id));
     await plan.deleteOne();
     res.json({ ok: true });
   }),
@@ -812,6 +790,19 @@ async function chargeFull(userId: string, accountId: string, amount: number, nam
     confirmDuplicate: true,
   });
   return saved.id;
+}
+
+function remember(plan: { settled?: { key: string; done: boolean; amount?: number }[] | null; set: (path: string, value: unknown) => void }, key: string, done: boolean, amount: number) {
+  if (!plan.settled) plan.set('settled', []);
+  const list = plan.settled;
+  if (!list) return;
+  const row = list.find((item) => item.key === key);
+  if (row) {
+    row.done = done;
+    row.amount = done ? amount : 0;
+    return;
+  }
+  list.push({ key, done, amount: done ? amount : 0 });
 }
 
 function moneyLabel(amount: number): string {

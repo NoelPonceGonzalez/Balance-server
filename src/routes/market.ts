@@ -18,7 +18,7 @@ import { clearCsfloatKey, csfloatConnected, csfloatKeyWorks, saveCsfloatKey } fr
 import { pushFailure, pushPendingOffers, pushPublicKey, sendToUser } from '../services/push.js';
 import { checkPurchaseWatches, keepOffer, passOffer, savedOffers } from '../services/watches.js';
 import { SavedOffer } from '../models/SavedOffer.js';
-import { browseListings, LISTING_SORTS, listingDetail, searchCatalog, trackedFor, trackListing, untrackListing, type ListingSort } from '../services/csfloat-listings.js';
+import { browseListings, LISTING_SORTS, listingDetail, searchCatalog, skinWatchesFor, trackedFor, trackListing, untrackListing, unwatchSkin, watchSkin, type ListingSort } from '../services/csfloat-listings.js';
 
 const router = Router();
 router.use(authenticateToken);
@@ -322,6 +322,41 @@ router.get(
   '/csfloat/listings/:id',
   asyncRoute(async (req, res) => {
     res.json(await listingDetail(owner(req as AuthRequest), listingId(req.params.id)));
+  }),
+);
+
+router.get(
+  '/skin-stars',
+  asyncRoute(async (req, res) => {
+    res.json({ skins: await skinWatchesFor(owner(req as AuthRequest)) });
+  }),
+);
+
+router.post(
+  '/skin-stars',
+  asyncRoute(async (req, res) => {
+    const body = (req.body || {}) as Record<string, unknown>;
+    const wears = Array.isArray(body.wears) ? body.wears.filter((item): item is string => typeof item === 'string') : [];
+    const paint = body.paintIndex == null || body.paintIndex === '' ? null : Number(body.paintIndex);
+    await watchSkin(owner(req as AuthRequest), {
+      name: asText(body.name, 'La skin', 120),
+      wear: typeof body.wear === 'string' ? body.wear : '',
+      label: asText(body.label, 'El nombre', 120),
+      image: typeof body.image === 'string' ? body.image : null,
+      paintIndex: paint != null && Number.isFinite(paint) ? paint : null,
+      wears,
+    });
+    res.json({ ok: true });
+  }),
+);
+
+router.delete(
+  '/skin-stars',
+  asyncRoute(async (req, res) => {
+    const name = asText(req.query.name, 'La skin', 120);
+    const wear = typeof req.query.wear === 'string' ? req.query.wear : '';
+    await unwatchSkin(owner(req as AuthRequest), name, wear);
+    res.json({ ok: true });
   }),
 );
 

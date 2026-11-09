@@ -28,7 +28,7 @@ import { resolveSkinLink, skinBaseName } from '../domain/skins.js';
 import { scheduleSkinRefresh, searchSkins } from './skins.js';
 import { sendToUser } from './push.js';
 import { checkPurchaseWatches, offerIdentity, purchasesFor } from './watches.js';
-import { checkTrackedListings } from './csfloat-listings.js';
+import { checkSkinWatches, checkTrackedListings } from './csfloat-listings.js';
 import { withMoves } from './story.js';
 
 const UA = 'Mozilla/5.0';
@@ -444,8 +444,8 @@ export async function checkAlerts() {
     if (band.fire && quote.changePct != null && alert.thresholdPct > 0) {
       const verb = band.fire === 'up' ? 'sube' : 'baja';
       await tell(
-        `${quote.name} ${verb}`,
-        `${signedPct(quote.changePct)} en ${quote.changeLabel}. Precio ${money(quote.priceEur)}.`,
+        `Cotización de ${quote.name} ${verb}`,
+        `${signedPct(quote.changePct)} en ${quote.changeLabel}. Va por ${money(quote.priceEur)}.`,
         band.fire,
       );
     }
@@ -454,8 +454,8 @@ export async function checkAlerts() {
       alert.aboveArmed = level.armed;
       if (level.fire) {
         await tell(
-          `${quote.name} ha pasado de ${money(alert.above)}`,
-          `Está en ${money(quote.priceEur)}.`,
+          `Cotización de ${quote.name} ha pasado de ${money(alert.above)}`,
+          `Ahora va por ${money(quote.priceEur)}.`,
           'up',
         );
       }
@@ -465,8 +465,8 @@ export async function checkAlerts() {
       alert.belowArmed = level.armed;
       if (level.fire) {
         await tell(
-          `${quote.name} ha bajado de ${money(alert.below)}`,
-          `Está en ${money(quote.priceEur)}.`,
+          `Cotización de ${quote.name} ha bajado de ${money(alert.below)}`,
+          `Ahora va por ${money(quote.priceEur)}.`,
           'down',
         );
       }
@@ -531,6 +531,7 @@ async function doRefresh() {
   }
   try {
     await checkTrackedListings();
+    await checkSkinWatches();
   } catch (error) {
     console.error('anuncios', error instanceof Error ? error.message : error);
   }

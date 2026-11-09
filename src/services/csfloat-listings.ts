@@ -1,7 +1,8 @@
 import { roundMoney } from '../domain/finance.js';
-import { wearFromQuery } from '../domain/skins.js';
+import { isSkinMarketName, skinBaseName, wearFromQuery } from '../domain/skins.js';
 import { HttpError } from '../http.js';
 import { Notification } from '../models/Notification.js';
+import { SkinWatch } from '../models/SkinWatch.js';
 import { TrackedListing } from '../models/TrackedListing.js';
 import { readCsfloatKey } from './csfloat-key.js';
 import { sendToUser } from './push.js';
@@ -403,7 +404,7 @@ async function runTrackedCheck(): Promise<void> {
       row.state = 'gone';
       row.endedAt = new Date();
       await row.save();
-      await tell(row, { title: 'ya no está a la venta', body: `Lo han quitado de CSFloat.${floatNote}`, direction: 'down', priceEur: row.priceEur ?? null });
+      await tell(row, { title: 'este anuncio ya no está a la venta', body: `Lo han quitado de CSFloat.${floatNote}`, direction: 'down', priceEur: row.priceEur ?? null });
       continue;
     }
     if (current.state === 'sold') {
@@ -412,7 +413,7 @@ async function runTrackedCheck(): Promise<void> {
       row.priceEur = current.priceEur;
       row.priceCents = current.priceCents;
       await row.save();
-      await tell(row, { title: 'se ha vendido', body: `Se lo han llevado por ${money(current.priceEur)}.${floatNote}`, direction: 'down', priceEur: current.priceEur });
+      await tell(row, { title: 'este anuncio se ha vendido', body: `Se lo han llevado por ${money(current.priceEur)}.${floatNote}`, direction: 'down', priceEur: current.priceEur });
       continue;
     }
     const before = row.priceCents;
@@ -423,10 +424,119 @@ async function runTrackedCheck(): Promise<void> {
     if (before == null || before === current.priceCents) continue;
     const down = current.priceCents < before;
     await tell(row, {
-      title: down ? `ha bajado a ${money(current.priceEur)}` : `ha subido a ${money(current.priceEur)}`,
+      title: down ? `Este anuncio ha bajado a ${money(current.priceEur)}` : `Este anuncio ha subido a ${money(current.priceEur)}`,
       body: `Antes estaba a ${beforeEur == null ? '—' : money(beforeEur)}.${floatNote}`,
       direction: down ? 'down' : 'up',
       priceEur: current.priceEur,
     });
+  }
+}
+
+const SKIN_WEARS = ['Factory New', 'Minimal Wear', 'Field-Tested', 'Well-Worn', 'Battle-Scarred'];
+const SKIN_GAP_MS = 5 * 60_000;
+let lastSkinAt = 0;
+let skinChecking: Promise<void> | null = null;
+
+export async function skinWatchesFor(userId: string) {
+  const rows = await SkinWatch.find({ userId }).sort({ updatedAt: -1 });
+  return rows.map((row) => ({
+    id: String(row._id),
+    name: row.name,
+    wear: row.wear || '',
+    label: row.label,
+    image: row.image,
+    lastBestEur: row.lastBestEur ?? null,
+  }));
+}
+
+export async function watchSkin(
+  userId: string,
+  input: { name: string; wear: string; label: string; image: string | null; paintIndex: number | null; wears: string[] },
+) {
+  const name = input.name.trim();
+  if (!isSkinMarketName(skinBaseName(name))) throw new HttpError(400, 'Esa skin no es válida.');
+  const wear = SKIN_WEARS.includes(input.wear) ? input.wear : '';
+  const wears = input.wears.filter((item) => SKIN_WEARS.includes(item)).slice(0, 5);
+  const image = input.image && input.image.startsWith('https://') ? input.image : null;
+  await SkinWatch.updateOne(
+    { userId, name, wear },
+    { $set: { label: input.label.trim().slice(0, 120) || name, image, paintIndex: input.paintIndex, wears: wears.length ? wears : wear ? [wear] : [] }, $setOnInsert: { lastBestEur: null } },
+    { upsert: true },
+  );
+}
+
+export async function unwatchSkin(userId: string, name: string, wear: string) {
+  const cleanWear = SKIN_WEARS.includes(wear) ? wear : '';
+  await SkinWatch.deleteOne({ userId, name: name.trim(), wear: cleanWear });
+}
+
+/** Una skin destacada: avisa si se mueve la más barata de ese desgaste, no un anuncio suelto. */
+export function checkSkinWatches(force = false): Promise<void> {
+  if (!force && Date.now() - lastSkinAt < SKIN_GAP_MS) return Promise.resolve();
+  if (!skinChecking) {
+    lastSkinAt = Date.now();
+    skinChecking = runSkinWatches().finally(() => { skinChecking = null; });
+  }
+  return skinChecking;
+}
+
+async function floorOf(userId: string, name: string, wears: string[], paintIndex: number | null): Promise<{ eur: number; image: string | null } | null> {
+  let best: { eur: number; image: string | null } | null = null;
+  for (const wear of wears) {
+    let rows: ListingView[] = [];
+    try {
+      rows = await browseListings(userId, {
+        marketHashName: `${name} (${wear})`,
+        sort: 'lowest_price',
+        minFloat: null,
+        maxFloat: null,
+        maxEur: null,
+        paintSeed: null,
+        paintIndex,
+      });
+    } catch {
+      return best;
+    }
+    const low = rows[0];
+    if (!low) continue;
+    if (!best || low.priceEur < best.eur) best = { eur: low.priceEur, image: low.image };
+  }
+  return best;
+}
+
+async function runSkinWatches(): Promise<void> {
+  const rows = await SkinWatch.find();
+  for (const row of rows) {
+    const wears = (row.wear ? [row.wear] : row.wears).filter((item) => SKIN_WEARS.includes(item));
+    if (!wears.length) continue;
+    const floor = await floorOf(String(row.userId), row.name, wears, row.paintIndex ?? null);
+    row.lastCheckedAt = new Date();
+    if (!floor) {
+      await row.save();
+      continue;
+    }
+    const before = row.lastBestEur;
+    row.lastBestEur = floor.eur;
+    if (floor.image) row.image = floor.image;
+    await row.save();
+    if (before == null) continue;
+    const gap = Math.abs(floor.eur - before);
+    if (gap < 1 && gap / Math.max(before, 1) < 0.03) continue;
+    const down = floor.eur < before;
+    const where = row.wear ? row.wear : 'cualquier desgaste';
+    const title = down ? `${row.label}: la más barata ha bajado` : `${row.label}: la más barata ha subido`;
+    const body = `En ${where} está en ${money(floor.eur)}. Antes ${money(before)}.`;
+    await Notification.create({
+      userId: row.userId,
+      quoteKey: `skin:${String(row._id)}:${Date.now()}`,
+      title,
+      body,
+      direction: down ? 'down' : 'up',
+      changePct: null,
+      priceEur: floor.eur,
+      image: row.image,
+      url: null,
+    });
+    await sendToUser(String(row.userId), { title, body, url: '/' }).catch(() => undefined);
   }
 }

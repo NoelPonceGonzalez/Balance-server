@@ -126,8 +126,8 @@ async function runPurchaseWatches(): Promise<void> {
         const quoteKey = `listing:${String(watch._id)}:${ask.id}`;
         const existing = await Notification.findOne({ userId: watch.userId, quoteKey });
         if (!existing) {
-          const title = `${watch.label} a la venta por debajo de ${money(watch.below)}`;
-          const body = `Alguien lo ha puesto en ${ask.market} a ${money(ask.eur)}.`;
+          const title = `Oferta: ${watch.label} por debajo de ${money(watch.below)}`;
+          const body = `En ${ask.market} la han puesto a ${money(ask.eur)}. Es un anuncio nuevo de esa skin.`;
           await Notification.create({
             userId: watch.userId,
             quoteKey,

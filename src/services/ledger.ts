@@ -604,30 +604,9 @@ export async function getDashboard(userId: string, period: string) {
   const accountIds = new Set(accounts.map((account) => String(account._id)));
   const holdings = holdingDocs.filter((item) => accountIds.has(String(item.accountId)));
   const portfolio = valuePortfolio(accounts.map(snapAccount), holdings.map(snapHolding));
-  const valuedEur = portfolio.netWorth.eur;
-  void Snapshot.updateOne(
-    { userId, day: today },
-    {
-      $set: {
-        valuedEur,
-        netWorthEur: portfolio.netWorth.complete ? valuedEur : null,
-        complete: portfolio.netWorth.complete,
-        availableEur: portfolio.available.eur,
-        investedEur: portfolio.invested.eur,
-        cryptoEur: portfolio.crypto.eur,
-      },
-    },
-    { upsert: true },
-  ).catch(() => undefined);
   const span: Record<string, number> = { '7d': 7, '30d': 30, '90d': 90, '365d': 365 };
   const key = period === 'all' || period in span ? period : '30d';
   const fromDay = key === 'all' ? '0000-01-01' : addDays(today, -(span[key] ?? 30));
-  const variation = variationFromSnapshots(
-    snapshots.map((item) => ({ day: item.day, netWorthEur: item.netWorthEur ?? null })),
-    today,
-    portfolio.netWorth.complete ? portfolio.netWorth.eur : null,
-    fromDay,
-  );
   const movements = movementDocs.filter((item) => item.date >= (fromDay === '0000-01-01' ? '0000-01-01' : fromDay) && item.date <= today);
   const flow = analyzeMovements(movements.map(toMovementSnap), fromDay === '0000-01-01' ? null : fromDay, today);
   const pnl = pnlSlices(accounts.map(snapAccount), holdings.map(snapHolding)).map((slice) => {
@@ -657,7 +636,7 @@ export async function getDashboard(userId: string, period: string) {
     const net = (book.entries || []).reduce((sum, entry) => sum + (entry.direction === 'in' ? entry.amount : -entry.amount), 0);
     walletNet.set(String(book.accountId), roundMoney(net));
   }
-  const markedCash = new Map<string, { balance: number; planId: string; flows: CashFlow[]; fixed: FixedRule[] }>();
+  const markedCash = new Map<string, { balance: number; planId: string; flows: CashFlow[]; fixed: FixedRule[]; touched: boolean }>();
   for (const plan of liquidityPlans) {
     const links = (plan.linkedAccountIds || []).map(String);
     if (links.length !== 1) continue;
@@ -665,7 +644,7 @@ export async function getDashboard(userId: string, period: string) {
     if (!linked || linked.currency !== 'EUR') continue;
     const includedUntil = linked.balanceUpdatedAt ? todayKey('Europe/Madrid', new Date(linked.balanceUpdatedAt)) : '';
     const marked = markedLiquidity(plan, linked.balance, today, includedUntil);
-    markedCash.set(links[0], { balance: marked.balance, planId: String(plan._id), flows: marked.flows, fixed: marked.fixed });
+    markedCash.set(links[0], { balance: marked.balance, planId: String(plan._id), flows: marked.flows, fixed: marked.fixed, touched: planHasCheck(plan) });
   }
   let cashDelta = 0;
   const accountViews = accounts.map((account) => {
@@ -674,8 +653,9 @@ export async function getDashboard(userId: string, period: string) {
     const partial = lines.some((line) => line.eur == null);
     const rawValue = partial ? null : lines.reduce((sum, line) => sum + (line.eur || 0), 0);
     const marked = markedCash.get(id);
-    const planShift = marked == null || account.currency !== 'EUR' ? 0 : marked.balance - account.balance;
-    const noteShift = account.currency === 'EUR' && (marked != null || account.balance > 0) ? walletNet.get(id) || 0 : 0;
+    const cashIsTheBalance = account.tracking !== 'positions';
+    const planShift = 0;
+    const noteShift = !cashIsTheBalance || account.currency !== 'EUR' || !(marked != null || account.balance > 0) ? 0 : walletNet.get(id) || 0;
     const shift = roundMoney(planShift + noteShift);
     if (rawValue != null && shift !== 0) cashDelta += shift;
     const valueEur = rawValue == null ? null : roundMoney(rawValue + shift);
@@ -700,12 +680,33 @@ export async function getDashboard(userId: string, period: string) {
       fixed: marked?.fixed || [],
     };
   });
+  const shownEur = roundMoney(portfolio.netWorth.eur + cashDelta);
+  const variation = variationFromSnapshots(
+    snapshots.map((item) => ({ day: item.day, netWorthEur: item.netWorthEur ?? null })),
+    today,
+    portfolio.netWorth.complete ? shownEur : null,
+    fromDay,
+  );
+  void Snapshot.updateOne(
+    { userId, day: today },
+    {
+      $set: {
+        valuedEur: shownEur,
+        netWorthEur: portfolio.netWorth.complete ? shownEur : null,
+        complete: portfolio.netWorth.complete,
+        availableEur: portfolio.available.eur,
+        investedEur: portfolio.invested.eur,
+        cryptoEur: portfolio.crypto.eur,
+      },
+    },
+    { upsert: true },
+  ).catch(() => undefined);
 
   return {
     today,
     period: key,
     currency: 'EUR',
-    netWorth: { ...portfolio.netWorth, eur: roundMoney(portfolio.netWorth.eur + cashDelta) },
+    netWorth: { ...portfolio.netWorth, eur: shownEur },
     available: portfolio.available,
     invested: portfolio.invested,
     crypto: portfolio.crypto,
@@ -719,7 +720,7 @@ export async function getDashboard(userId: string, period: string) {
       const points = snapshots
         .filter((item) => item.day >= fromDay && item.day <= today && item.day !== today)
         .map((item) => ({ day: item.day, eur: item.valuedEur, complete: item.complete }));
-      if (today >= fromDay) points.push({ day: today, eur: valuedEur, complete: portfolio.netWorth.complete });
+      if (today >= fromDay) points.push({ day: today, eur: shownEur, complete: portfolio.netWorth.complete });
       return points;
     })(),
     allocation: allocationSlices(portfolio),
@@ -794,7 +795,7 @@ function sliceOf(
   holdings: { accountId: string; assetClass: string; quantity: number; unitMarketValue?: number | null; currency: string; eurPerUnit?: number | null }[],
   kind: 'patrimonio' | 'liquidez' | 'inversion',
   field: string,
-): { amount: number; label: string; incomplete: boolean } | null {
+): { amount: number; label: string; incomplete: boolean; pieces: { group: string; eur: number }[] } | null {
   const names = accounts.map((account) => account.name).join(' y ');
   let incomplete = false;
   const liquid = accounts.reduce((sum, account) => {
@@ -806,33 +807,197 @@ function sliceOf(
     return sum + eur;
   }, 0);
   const wanted = kind === 'inversion' ? fieldClass(field) : null;
-  const invested = holdings.reduce((sum, holding) => {
-    if (!accounts.some((account) => account.id === holding.accountId)) return sum;
-    if (wanted && holding.assetClass !== wanted) return sum;
-    if (!(holding.quantity > 0)) return sum;
+  const grouped = new Map<string, number>();
+  let invested = 0;
+  for (const holding of holdings) {
+    if (!accounts.some((account) => account.id === holding.accountId)) continue;
+    if (wanted && holding.assetClass !== wanted) continue;
+    if (!(holding.quantity > 0)) continue;
     if (holding.unitMarketValue == null) {
       incomplete = true;
-      return sum;
+      continue;
     }
     const eur = moneyEur(holding.unitMarketValue * holding.quantity, holding.currency, holding.eurPerUnit);
     if (eur == null) {
       incomplete = true;
-      return sum;
+      continue;
     }
-    return sum + eur;
-  }, 0);
+    invested += eur;
+    const group = holding.assetClass === 'crypto' || holding.assetClass === 'stock' || holding.assetClass === 'etf' ? holding.assetClass : 'other';
+    grouped.set(group, (grouped.get(group) || 0) + eur);
+  }
+  const pieces: { group: string; eur: number }[] = [];
+  if (kind !== 'inversion') pieces.push({ group: 'cash', eur: roundMoney(liquid) });
+  for (const group of ['crypto', 'etf', 'stock', 'other']) {
+    const eur = grouped.get(group);
+    if (eur) pieces.push({ group, eur: roundMoney(eur) });
+  }
   if (kind === 'liquidez') {
-    return { amount: roundMoney(liquid), label: `la liquidez de ${names}`, incomplete };
+    return { amount: roundMoney(liquid), label: `la liquidez de ${names}`, incomplete, pieces: pieces.filter((piece) => piece.group === 'cash') };
   }
   if (kind === 'inversion') {
     const what = field.trim() || 'la inversión';
-    return { amount: roundMoney(invested), label: `${what} de ${names}`, incomplete };
+    return { amount: roundMoney(invested), label: `${what} de ${names}`, incomplete, pieces };
   }
-  return { amount: roundMoney(liquid + invested), label: names, incomplete };
+  return { amount: roundMoney(liquid + invested), label: names, incomplete, pieces };
+}
+
+function planHasCheck(plan: {
+  savingsPaid?: string[];
+  settled?: { done?: boolean }[];
+  plannedExpenses?: { paid?: boolean }[];
+  incomes?: { paid?: boolean }[];
+  recurring?: { paidDates?: string[] }[];
+  intervals?: { paidDates?: string[] }[];
+}): boolean {
+  if ((plan.savingsPaid || []).length > 0) return true;
+  if ((plan.settled || []).some((item) => item.done === true)) return true;
+  if ((plan.plannedExpenses || []).some((item) => item.paid === true)) return true;
+  if ((plan.incomes || []).some((item) => item.paid === true)) return true;
+  if ((plan.recurring || []).some((item) => (item.paidDates || []).length > 0)) return true;
+  if ((plan.intervals || []).some((item) => (item.paidDates || []).length > 0)) return true;
+  return false;
+}
+
+type CashWish = { key: string; amount: number; direction: 'in' | 'out'; date: string; name: string };
+
+function wishesOf(plan: {
+  name?: string;
+  monthlySavings?: number;
+  savingsPaid?: string[];
+  savingsAdjustments?: { date: string; amount: number; name?: string }[];
+  settled?: { key: string; done?: boolean; amount?: number }[];
+  recurring?: { _id?: unknown; name?: string; amount: number; paidDates?: string[]; direction?: 'in' | 'out' }[];
+  intervals?: { _id?: unknown; name?: string; amount: number; paidDates?: string[]; direction?: 'in' | 'out' }[];
+  plannedExpenses?: { _id?: unknown; name?: string; amount: number; date: string; paid?: boolean }[];
+  incomes?: { _id?: unknown; name?: string; amount: number; date: string; paid?: boolean }[];
+}): CashWish[] {
+  const settled = new Map((plan.settled || []).map((item) => [item.key, item]));
+  const amountOf = (key: string, fallback: number) => {
+    const row = settled.get(key);
+    return row?.done && (row.amount || 0) > 0 ? row.amount || 0 : fallback;
+  };
+  const wishes: CashWish[] = [];
+  const push = (wish: CashWish) => {
+    if (!(wish.amount > 0) || !wish.date) return;
+    wishes.push(wish);
+  };
+  for (const item of plan.plannedExpenses || []) {
+    const key = `expense:${String(item._id)}`;
+    if (item.paid !== true && settled.get(key)?.done !== true) continue;
+    push({ key, amount: item.amount, direction: 'out', date: String(item.date).slice(0, 10), name: item.name || 'Gasto' });
+  }
+  for (const item of plan.incomes || []) {
+    const key = `income:${String(item._id)}`;
+    if (item.paid !== true && settled.get(key)?.done !== true) continue;
+    push({ key, amount: item.amount, direction: 'in', date: String(item.date).slice(0, 10), name: item.name || 'Ingreso' });
+  }
+  for (const day of plan.savingsPaid || []) {
+    const key = `savings:${day}`;
+    const adjustment = (plan.savingsAdjustments || []).find((item) => item.date.slice(0, 10) === day);
+    push({ key, amount: amountOf(key, adjustment?.amount || plan.monthlySavings || 0), direction: 'in', date: day.slice(0, 10), name: adjustment?.name || 'Ahorro' });
+  }
+  const dated = (
+    kind: 'recurring' | 'interval',
+    list: { _id?: unknown; name?: string; amount: number; paidDates?: string[]; direction?: 'in' | 'out' }[] | undefined,
+  ) => {
+    for (const item of list || []) {
+      for (const day of item.paidDates || []) {
+        const key = `${kind}:${String(item._id)}:${day}`;
+        if (settled.get(key)?.done === false) continue;
+        push({
+          key,
+          amount: amountOf(key, item.amount),
+          direction: item.direction === 'in' ? 'in' : 'out',
+          date: day.slice(0, 10),
+          name: item.name || (item.direction === 'in' ? 'Entrada' : 'Gasto'),
+        });
+      }
+    }
+  };
+  dated('recurring', plan.recurring);
+  dated('interval', plan.intervals);
+  for (const row of plan.settled || []) {
+    if (row.done !== true || !(row.amount && row.amount > 0) || wishes.some((item) => item.key === row.key)) continue;
+    const [kind, id, occurrence] = row.key.split(':');
+    if (kind !== 'recurring' && kind !== 'interval' && kind !== 'savings') continue;
+    const list = kind === 'recurring' ? plan.recurring : plan.intervals;
+    const item = (list || []).find((entry) => String(entry._id) === id);
+    if (kind !== 'savings' && !item) continue;
+    push({
+      key: row.key,
+      amount: row.amount,
+      direction: kind === 'savings' || item?.direction === 'in' ? 'in' : 'out',
+      date: (kind === 'savings' ? id : occurrence || '').slice(0, 10),
+      name: item?.name || 'Ahorro',
+    });
+  }
+  return wishes;
+}
+
+async function forgetMove(userId: string, movementId: string) {
+  try {
+    await deleteMovement(userId, movementId);
+  } catch (err) {
+    if (!(err instanceof HttpError) || err.status !== 404) throw err;
+  }
+}
+
+/** El check entra o sale de la cartera elegida. Quitar el check devuelve el dinero. */
+export async function alignPlanCash(userId: string, planId: string) {
+  const plan = await Plan.findOne({ _id: planId, userId });
+  if (!plan || plan.kind === 'gastos') return;
+  const links = (plan.linkedAccountIds || []).map(String);
+  const account = links.length === 1 ? await Account.findOne({ _id: links[0], userId, archived: { $ne: true } }) : null;
+  const can = Boolean(account && account.currency === 'EUR');
+  const wishes = can ? wishesOf(plan) : [];
+  if (!plan.cashMoves) plan.set('cashMoves', []);
+  const current = plan.cashMoves || [];
+  const same = (wish: CashWish, move: { amount: number; date: string; direction: string }) =>
+    move.amount === wish.amount && move.date === wish.date && move.direction === wish.direction;
+  for (const move of current) {
+    const next = wishes.find((item) => item.key === move.key);
+    if (!next || !same(next, move)) await forgetMove(userId, move.movementId);
+  }
+  const kept: { key: string; movementId: string; amount: number; date: string; direction: 'in' | 'out' }[] = [];
+  for (const move of current) {
+    const next = wishes.find((item) => item.key === move.key);
+    if (next && same(next, move)) kept.push({ key: move.key, movementId: move.movementId, amount: move.amount, date: move.date, direction: move.direction === 'in' ? 'in' : 'out' });
+  }
+  if (account && can) {
+    for (const wish of wishes) {
+      if (kept.some((item) => item.key === wish.key)) continue;
+      const saved = await createMovement(userId, {
+        type: wish.direction === 'in' ? 'income' : 'expense',
+        date: wish.date,
+        amount: wish.amount,
+        currency: 'EUR',
+        category: '',
+        description: `${plan.name}: ${wish.name}`.slice(0, 500),
+        accountId: String(account._id),
+        applyToBalances: true,
+        confirmDuplicate: true,
+      });
+      kept.push({ key: wish.key, movementId: saved.id, amount: wish.amount, date: wish.date, direction: wish.direction });
+    }
+  }
+  const before = current.map((item) => `${item.key}:${item.movementId}:${item.amount}:${item.date}:${item.direction}`).join('|');
+  const after = kept.map((item) => `${item.key}:${item.movementId}:${item.amount}:${item.date}:${item.direction}`).join('|');
+  if (before !== after) {
+    plan.cashMoves.splice(0, plan.cashMoves.length, ...kept);
+    await plan.save();
+  }
+}
+
+export async function releasePlanCash(userId: string, planId: string) {
+  const plan = await Plan.findOne({ _id: planId, userId });
+  if (!plan) return;
+  for (const move of plan.cashMoves || []) await forgetMove(userId, move.movementId);
 }
 
 export async function forecastForPlan(
   plan: {
+    _id?: unknown;
     openingBalance: number;
     kind?: string;
     field?: string;
@@ -884,7 +1049,8 @@ export async function forecastForPlan(
   let real: number | null = plan.manualRealBalance ?? null;
   const notes: string[] = [];
   const links = (plan.linkedAccountIds || []).map(String);
-  const books = shared ? shared.books : links.length ? await loadBooks(userId) : null;
+  if (plan._id) await alignPlanCash(userId, String(plan._id));
+  const books = links.length ? await loadBooks(userId) : shared ? shared.books : null;
   const linked = books ? books.accounts.filter((account) => links.includes(account.id)) : [];
   if (links.length) {
     if (linked.length !== links.length) notes.push('Alguna cuenta vinculada ya no está disponible.');
@@ -904,7 +1070,8 @@ export async function forecastForPlan(
   const slice = books && linked.length ? sliceOf(linked, books.holdings, kind, plan.field || '') : null;
   const opening = slice && !slice.incomplete ? slice.amount : plan.openingBalance;
   if (slice?.incomplete) notes.push('El plan no puede usar ese sitio hasta que el importe esté en euros.');
-  const liveCash = kind === 'liquidez' && Boolean(slice && !slice.incomplete && linked.length === 1);
+  const mirrored = linked.length === 1 && linked[0]?.currency === 'EUR';
+  const liveCash = !mirrored && kind === 'liquidez' && Boolean(slice && !slice.incomplete && linked.length === 1);
   const includedUntil = liveCash && linked[0]?.updatedAt ? todayKey(timezone, new Date(linked[0].updatedAt)) : '';
   const forecast = forecastPlan(
     {
@@ -920,6 +1087,7 @@ export async function forecastForPlan(
       savingsAdjustments: plan.savingsAdjustments || [],
       settled: (plan.settled || []).map((item) => ({ key: item.key, done: item.done === true, amount: item.amount || 0 })),
       includedUntil,
+      mirrored,
       recurring: (plan.recurring || []).map((item) => ({
         id: refId(item),
         name: item.name,
@@ -971,7 +1139,8 @@ export async function forecastForPlan(
     realBalance: real,
     notes: [...forecast.notes, ...notes],
     today,
-    anchor: slice && !slice.incomplete ? { amount: slice.amount, label: slice.label } : null,
+    anchor: slice && !slice.incomplete ? { amount: slice.amount, label: slice.label, pieces: slice.pieces } : null,
+    site: books && linked.length ? sliceOf(linked, books.holdings, 'patrimonio', '')?.pieces || [] : [],
   };
 }
 

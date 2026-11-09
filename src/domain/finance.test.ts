@@ -560,6 +560,24 @@ describe('planes de ahorro', () => {
     assert.equal(forecast.months.some((month) => month.month === '2027-08'), false);
   });
 
+  it('sin un check, un gasto no resta el dinero que ya está en la cuenta', () => {
+    const plan: SavingsPlanInput = {
+      openingBalance: 3200,
+      startDate: '2026-09-01',
+      targetAmount: 10000,
+      targetDate: '2027-06-30',
+      monthlySavings: 400,
+      savingsDay: 1,
+      settled: [],
+      recurring: [{ id: 'rent', name: 'Alquiler', amount: 900, dayOfMonth: 3, direction: 'out' }],
+      plannedExpenses: [{ id: 'bike', name: 'Bici', amount: 1500, date: '2026-10-02' }],
+      incomes: [],
+    };
+    const forecast = forecastPlan(plan, 3200, '2026-11-09');
+    assert.equal(forecast.plannedToday, 3200);
+    assert.equal(forecast.plannedWithExpectedToday, 3200);
+  });
+
   it('avanza los días sin salirse del calendario', () => {
     assert.equal(addDays('2026-01-31', 1), '2026-02-01');
   });
