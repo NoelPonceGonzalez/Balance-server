@@ -2,6 +2,7 @@ import { estimateSkin, isSkinMarketName, linkSkin, phasesFor, rankFromFloat, res
 import { roundMoney } from '../domain/finance.js';
 import { Holding } from '../models/Holding.js';
 import { recordSnapshot } from './ledger.js';
+import { skinportAsks } from './skinport-feed.js';
 
 const GAP_MS = 30 * 60_000;
 let lastRunAt = 0;
@@ -230,7 +231,10 @@ export async function openAsks(names: string[], key: string | null = null, maxEu
     }
   }
   for (const name of unique) {
-    if (!out.has(name)) out.set(name, null);
+    const csfloat = out.get(name) ?? null;
+    const cap = maxEur.get(name);
+    const skinport = skinportAsks(name)?.filter((ask) => cap == null || ask.eur <= cap) ?? null;
+    out.set(name, csfloat == null && !skinport?.length ? null : [...(csfloat || []), ...(skinport || [])]);
   }
   return out;
 }

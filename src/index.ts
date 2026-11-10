@@ -17,6 +17,7 @@ import extraRoutes from './routes/extras.js';
 import walletRoutes from './routes/wallets.js';
 import { startMarketLoop } from './services/market.js';
 import { startReminderLoop } from './services/plan-reminders.js';
+import { startSkinportFeed } from './services/skinport-feed.js';
 
 const app = express();
 app.set('trust proxy', 1);
@@ -85,6 +86,7 @@ const start = async () => {
   await connectDB();
   startMarketLoop();
   startReminderLoop();
+  startSkinportFeed();
   app.listen(config.port, '0.0.0.0', () => {
     console.log(`✅ Patrimonio API en http://0.0.0.0:${config.port}`);
   });
