@@ -10,6 +10,8 @@ const NotificationSchema = new mongoose.Schema(
     changePct: { type: Number, default: null },
     priceEur: { type: Number, default: null },
     floatValue: { type: Number, default: null },
+    paintSeed: { type: Number, default: null },
+    referenceEur: { type: Number, default: null },
     image: { type: String, default: null },
     url: { type: String, default: null },
     read: { type: Boolean, default: false },

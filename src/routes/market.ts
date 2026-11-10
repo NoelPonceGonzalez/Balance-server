@@ -469,6 +469,8 @@ router.get(
         changePct: item.changePct,
         priceEur: item.priceEur,
         floatValue: item.floatValue,
+        paintSeed: item.paintSeed ?? null,
+        referenceEur: item.referenceEur ?? null,
         image: item.image,
         url: item.url,
         read: item.read,

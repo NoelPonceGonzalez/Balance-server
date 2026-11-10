@@ -134,9 +134,11 @@ async function runPurchaseWatches(): Promise<void> {
             title,
             body,
             direction: 'down',
-            changePct: null,
+            changePct: ask.referenceEur && ask.referenceEur > 0 ? Math.round(((ask.eur - ask.referenceEur) / ask.referenceEur) * 1000) / 10 : null,
             priceEur: ask.eur,
             floatValue: ask.floatValue,
+            paintSeed: ask.paintSeed,
+            referenceEur: ask.referenceEur,
             image: ask.image,
             url: ask.url,
           });

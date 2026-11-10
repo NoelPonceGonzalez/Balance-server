@@ -147,6 +147,8 @@ export interface OpenAsk {
   eur: number;
   url: string;
   floatValue: number | null;
+  paintSeed: number | null;
+  referenceEur: number | null;
   image: string | null;
 }
 
@@ -179,13 +181,15 @@ async function csfloatAsks(name: string, key: string | null, maxEur: number | nu
   if (!rate) return 'unknown';
   return rows.flatMap((row) => {
     if (!row || typeof row !== 'object') return [];
-    const listing = row as { id?: string; price?: number; item?: { float_value?: number; icon_url?: string; market_hash_name?: string } };
+    const listing = row as { id?: string; price?: number; reference?: { predicted_price?: number }; item?: { float_value?: number; paint_seed?: number; icon_url?: string; market_hash_name?: string } };
     if (listing.item?.market_hash_name && listing.item.market_hash_name !== name) return [];
     const usd = typeof listing.price === 'number' ? listing.price / 100 : null;
     const id = typeof listing.id === 'string' ? listing.id : '';
     const cents = typeof listing.price === 'number' ? Math.round(listing.price) : 0;
     if (usd == null || !(usd > 0) || !id || !(cents > 0)) return [];
     const floatValue = listing.item?.float_value;
+    const paintSeed = listing.item?.paint_seed;
+    const predicted = listing.reference?.predicted_price;
     const eur = roundMoney(usd / rate);
     return [{
       market: 'CSFloat' as const,
@@ -193,6 +197,8 @@ async function csfloatAsks(name: string, key: string | null, maxEur: number | nu
       eur,
       url: `https://csfloat.com/item/${id}`,
       floatValue: typeof floatValue === 'number' && Number.isFinite(floatValue) ? floatValue : null,
+      paintSeed: typeof paintSeed === 'number' && Number.isFinite(paintSeed) ? paintSeed : null,
+      referenceEur: typeof predicted === 'number' && predicted > 0 ? roundMoney(predicted / 100 / rate) : null,
       image: steamIcon(listing.item?.icon_url),
     }];
   });
