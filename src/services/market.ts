@@ -83,6 +83,13 @@ function limited(error: unknown): boolean {
   return error instanceof Error && error.message === '429';
 }
 
+function headline(error: unknown, fallback: string) {
+  if (limited(error)) return;
+  const message = error instanceof Error ? error.message : fallback;
+  if (/ha respondido \d+/.test(message)) return;
+  lastError = message;
+}
+
 function geckoHeaders(): Record<string, string> {
   const headers: Record<string, string> = { accept: 'application/json' };
   const key = process.env.COINGECKO_API_KEY?.trim();
@@ -95,7 +102,7 @@ async function loadFx(): Promise<Record<string, number>> {
     const data = (await readJson('https://api.frankfurter.app/latest?from=EUR', { accept: 'application/json' })) as { rates?: Record<string, number> };
     if (data.rates) fxCache = data.rates;
   } catch (error) {
-    if (!Object.keys(fxCache).length) lastError = error instanceof Error ? error.message : 'Sin tipo de cambio.';
+    if (!Object.keys(fxCache).length) headline(error, 'Sin tipo de cambio.');
   }
   return fxCache;
 }
@@ -371,7 +378,7 @@ async function autoLink() {
       }
       await holding.save();
     } catch (error) {
-      lastError = error instanceof Error ? error.message : 'No se ha podido buscar el símbolo.';
+      headline(error, 'No se ha podido buscar el símbolo.');
     }
   }
 }
@@ -503,8 +510,8 @@ async function doRefresh() {
     }
   } catch (error) {
     if (!limited(error)) {
-      lastError = error instanceof Error ? error.message : 'CoinGecko no responde.';
-      for (const id of coins) await markQuoteError('coingecko', id, lastError);
+      headline(error, 'CoinGecko no responde.');
+      for (const id of coins) await markQuoteError('coingecko', id, error instanceof Error ? error.message : 'CoinGecko no responde.');
     }
   }
   const listed = await pool(listings, 4, async (symbol) => {
@@ -517,7 +524,7 @@ async function doRefresh() {
       await saveQuote(quote);
     } catch (error) {
       const message = limited(error) ? 'Hay que esperar un momento para actualizar este precio.' : error instanceof Error ? error.message : 'Yahoo Finance no responde.';
-      if (!limited(error)) lastError = message;
+      headline(error, 'Yahoo Finance no responde.');
       await markQuoteError('yahoo', symbol, message);
     }
   });
@@ -582,7 +589,7 @@ export function refreshMarket(): Promise<void> {
   if (!refreshing) {
     refreshing = doRefresh()
       .catch((error) => {
-        if (!limited(error)) lastError = error instanceof Error ? error.message : 'No se han podido actualizar las cotizaciones.';
+        headline(error, 'No se han podido actualizar las cotizaciones.');
         console.error('mercado', error);
       })
       .finally(() => {
@@ -602,7 +609,7 @@ async function refreshBoard(fx: Record<string, number>) {
       cryptos.push({ key: quoteKey(quote.source, quote.externalId), kind: 'crypto' });
     }
   } catch (error) {
-    if (!limited(error)) lastError = error instanceof Error ? error.message : 'CoinGecko no responde.';
+    headline(error, 'CoinGecko no responde.');
   }
   if (!cryptos.length) cryptos = boardSlots.filter((slot) => slot.kind === 'crypto');
 
@@ -642,7 +649,7 @@ async function fillListed(
       slots[index] = { key, kind };
     } catch (error) {
       const message = limited(error) ? 'Hay que esperar un momento para actualizar este precio.' : error instanceof Error ? error.message : 'Yahoo Finance no responde.';
-      if (!limited(error)) lastError = message;
+      headline(error, 'Yahoo Finance no responde.');
       await markQuoteError('yahoo', symbol, message);
       if (previous.has(key)) slots[index] = { key, kind };
     }
