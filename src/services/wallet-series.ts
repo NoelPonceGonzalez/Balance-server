@@ -49,7 +49,29 @@ export function combineSeries(lines: Track[], today: string): SeriesPoint[] {
 function daysBetween(from: Date, today: string): number {
   const start = Date.parse(`${today}T00:00:00Z`);
   const span = Math.ceil((start - from.getTime()) / 86_400_000);
-  return Math.min(365, Math.max(2, span || 2));
+  return Math.min(365, Math.max(30, span || 30));
+}
+
+function shiftDay(day: string, count: number): string {
+  const date = new Date(`${day}T00:00:00Z`);
+  date.setUTCDate(date.getUTCDate() + count);
+  return date.toISOString().slice(0, 10);
+}
+
+/** Rellena los huecos con el último precio conocido para que un día sin cotización no baje la línea a cero. */
+function carryPrices(prices: { day: string; eur: number }[], quantity: number, today: string, unit: number): Map<string, number> {
+  const values = new Map<string, number>();
+  const known = new Map(prices.filter((point) => point.day <= today && point.eur > 0).map((point) => [point.day, point.eur]));
+  const first = [...known.keys()].sort()[0];
+  const start = shiftDay(today, -29);
+  const from = first && first < start ? first : start;
+  let carry = first ? known.get(first) || 0 : unit;
+  if (!(carry > 0)) return values;
+  for (let day = from; day <= today; day = shiftDay(day, 1)) {
+    if (known.has(day)) carry = known.get(day) || carry;
+    values.set(day, roundMoney(carry * quantity));
+  }
+  return values;
 }
 
 async function pool<T, R>(items: T[], size: number, fn: (item: T) => Promise<R>): Promise<R[]> {
@@ -94,26 +116,24 @@ async function build(userId: string, accountId: string, group: string, holdingId
   }, null);
   const span = daysBetween(opened || new Date(), today);
   const lines = await pool(holdings, 2, async (holding) => {
-    const current = holding.unitMarketValue != null ? roundMoney(holding.unitMarketValue * holding.quantity) : 0;
-    const values = new Map<string, number>();
-    if (!(current > 0)) return { values, current: 0 };
+    const unit = holding.unitMarketValue != null && holding.unitMarketValue > 0 ? holding.unitMarketValue : 0;
+    const current = unit ? roundMoney(unit * holding.quantity) : 0;
+    if (!(current > 0)) return { values: new Map<string, number>(), current: 0 };
     try {
       if ((holding.quoteSource === 'coingecko' || holding.quoteSource === 'yahoo') && holding.quoteId) {
         const prices = await dailyEuroPrices(holding.quoteSource, holding.quoteId, span);
-        for (const point of prices) values.set(point.day, roundMoney(point.eur * holding.quantity));
-      } else if (holding.assetClass === 'personal_good') {
+        return { values: carryPrices(prices, holding.quantity, today, unit), current };
+      }
+      if (holding.assetClass === 'personal_good') {
         const resolved = resolveSkinLink({ name: holding.name, notes: holding.notes, quoteId: holding.quoteId });
-        if (resolved) {
-          const sales = await pricedHistory(resolved.link.marketHashName, resolved.link.paintIndex);
-          for (const sale of sales) {
-            if (sale.eur > 0) values.set(sale.at.slice(0, 10), roundMoney(sale.eur * holding.quantity));
-          }
-        }
+        const sales = resolved ? await pricedHistory(resolved.link.marketHashName, resolved.link.paintIndex) : [];
+        const prices = sales.flatMap((sale) => (sale.eur > 0 ? [{ day: sale.at.slice(0, 10), eur: sale.eur }] : []));
+        return { values: carryPrices(prices, holding.quantity, today, unit), current };
       }
     } catch {
-      return { values, current };
+      return { values: carryPrices([], holding.quantity, today, unit), current };
     }
-    return { values, current };
+    return { values: carryPrices([], holding.quantity, today, unit), current };
   });
   return combineSeries(lines.filter((line) => line.current > 0), today);
 }
