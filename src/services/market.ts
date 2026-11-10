@@ -869,6 +869,8 @@ export async function signalsFor(userId: string, known?: Map<string, { quoteKey:
     below: row.belowEur,
     note: row.note,
     image: seen.get(row.id) || await skinMark(row.hash),
+    maxFloat: row.maxFloat,
+    paintSeed: row.paintSeed,
   })));
   return [...priceRows, ...buys];
 }

@@ -103,7 +103,12 @@ async function runPurchaseWatches(): Promise<void> {
         continue;
       }
       const low = cheapest(asks);
-      const hot = asks.filter((ask) => ask.eur <= watch.below);
+      const hot = asks.filter((ask) => {
+        if (!(ask.eur <= watch.below)) return false;
+        if (watch.maxFloat != null && (ask.floatValue == null || ask.floatValue > watch.maxFloat)) return false;
+        if (watch.paintSeed != null && ask.paintSeed !== watch.paintSeed) return false;
+        return true;
+      });
       const passed = new Set(watch.passedIds || []);
       const seen = new Set([...(watch.seenIds || []), ...prior]);
       watch.lastPriceEur = low?.eur ?? null;
@@ -240,6 +245,8 @@ export async function purchasesFor(userId: string) {
           ? `Hay una oferta abierta en ${place} a este precio.`
           : `La más barata en ${place} sigue por encima.`,
       hash: row.marketHashName,
+      maxFloat: row.maxFloat ?? null,
+      paintSeed: row.paintSeed ?? null,
     };
   });
 }

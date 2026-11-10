@@ -6,6 +6,8 @@ const WatchSchema = new mongoose.Schema(
     marketHashName: { type: String, required: true },
     label: { type: String, required: true },
     below: { type: Number, required: true },
+    maxFloat: { type: Number, default: null },
+    paintSeed: { type: Number, default: null },
     belowArmed: { type: Boolean, default: true },
     lastPriceEur: { type: Number, default: null },
     lastSoldAt: { type: Date, default: null },

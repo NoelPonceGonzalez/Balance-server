@@ -425,13 +425,15 @@ router.post(
     const label = asText(req.body?.label, 'El nombre', 80);
     const marketHashName = asText(req.body?.marketHashName, 'La skin', 120);
     const below = asMoney(req.body?.below, 'El precio');
+    const maxFloat = optionalNumber(req.body?.maxFloat, 0, 1, 'El float');
+    const paintSeed = optionalNumber(req.body?.paintSeed, 0, 1000, 'El patrón');
     if (!isSkinMarketName(skinBaseName(marketHashName))) throw new HttpError(400, 'Esa compra no está en un mercado.');
     if (!(below > 0)) throw new HttpError(400, 'Pon el precio por debajo del cual avisar.');
     const current = await Watch.findOne({ userId, marketHashName });
     const rearm = !current || current.below !== below;
     await Watch.updateOne(
       { userId, marketHashName },
-      { $set: { label, below, enabled: true, ...(rearm ? { belowArmed: true } : {}) }, $setOnInsert: { userId, marketHashName } },
+      { $set: { label, below, maxFloat, paintSeed, enabled: true, ...(rearm ? { belowArmed: true } : {}) }, $setOnInsert: { userId, marketHashName } },
       { upsert: true },
     );
     await checkPurchaseWatches();
