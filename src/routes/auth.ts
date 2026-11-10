@@ -184,11 +184,24 @@ router.patch(
     const user = await User.findById((req as AuthRequest).userId);
     if (!user) throw new HttpError(401, 'La sesión no es válida.');
     if (req.body?.name != null) user.name = asText(req.body.name, 'El nombre', 80);
+    if (req.body?.username != null) {
+      const username = asUsername(req.body.username);
+      const taken = await User.findOne({ username, _id: { $ne: user._id } });
+      if (taken) throw new HttpError(400, 'Ese usuario ya existe.');
+      user.username = username;
+    }
     if (req.body?.theme != null) {
       if (!['light', 'dark', 'system'].includes(req.body.theme)) throw new HttpError(400, 'El tema no es válido.');
       user.theme = req.body.theme;
     }
-    await user.save();
+    try {
+      await user.save();
+    } catch (error) {
+      if (error && typeof error === 'object' && 'code' in error && (error as { code?: number }).code === 11000) {
+        throw new HttpError(400, 'Ese usuario ya existe.');
+      }
+      throw error;
+    }
     res.json({ user: publicUser(user) });
   }),
 );
