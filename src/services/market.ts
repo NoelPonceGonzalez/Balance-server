@@ -29,6 +29,7 @@ import { csfloatBoard, scheduleSkinRefresh, searchSkins } from './skins.js';
 import { sendToUser } from './push.js';
 import { checkPurchaseWatches, offerIdentity, purchasesFor } from './watches.js';
 import { checkInvestPlans, investCoins } from './invest-watch.js';
+import { checkAssetEvents } from './asset-events.js';
 import { checkSkinWatches, checkTrackedListings } from './csfloat-listings.js';
 import { withMoves } from './story.js';
 
@@ -539,6 +540,11 @@ async function doRefresh() {
     await checkInvestPlans();
   } catch (error) {
     console.error('plan de compras', error instanceof Error ? error.message : error);
+  }
+  try {
+    await checkAssetEvents();
+  } catch (error) {
+    console.error('eventos', error instanceof Error ? error.message : error);
   }
   try {
     await checkPurchaseWatches();
