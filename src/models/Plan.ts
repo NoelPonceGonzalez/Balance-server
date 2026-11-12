@@ -208,6 +208,50 @@ const PlanSchema = new mongoose.Schema(
       ],
       default: [],
     },
+    /** Compras por tandas de un plan de inversión. Sin fecha, la tanda espera a un aviso del mercado. */
+    buys: {
+      type: [
+        new mongoose.Schema(
+          {
+            asset: { type: String, required: true, maxlength: 40 },
+            amount: { type: Number, required: true },
+            date: { type: String, default: '' },
+            done: { type: Boolean, default: false },
+            doneAt: { type: String, default: '' },
+            priceEur: { type: Number, default: null },
+            /** Marcada a mano con el botón; lo demás sale de las compras de Movimientos. */
+            manual: { type: Boolean, default: false },
+            manualAt: { type: String, default: '' },
+            manualPrice: { type: Number, default: null },
+            movementIds: { type: [String], default: [] },
+            spent: { type: Number, default: 0 },
+            quantity: { type: Number, default: 0 },
+          },
+          { _id: true },
+        ),
+      ],
+      default: undefined,
+    },
+    watch: {
+      type: new mongoose.Schema(
+        {
+          dropPct: { type: Number, default: 5 },
+          risePct: { type: Number, default: 8 },
+          ratioAbove: { type: Number, default: null },
+          zones: {
+            type: [new mongoose.Schema({ asset: { type: String, required: true }, belowEur: { type: Number, required: true } }, { _id: false })],
+            default: [],
+          },
+          refs: {
+            type: [new mongoose.Schema({ asset: { type: String, required: true }, priceEur: { type: Number, required: true }, at: { type: String, required: true }, source: { type: String, default: '' } }, { _id: false })],
+            default: [],
+          },
+          fired: { type: [String], default: [] },
+        },
+        { _id: false },
+      ),
+      default: undefined,
+    },
   },
   { timestamps: true },
 );

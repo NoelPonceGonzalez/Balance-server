@@ -413,7 +413,8 @@ export async function refreshSkinHoldings(holdingId?: string): Promise<void> {
     const eur = roundMoney(estimate.usd / rate);
     if (!(eur > 0)) continue;
     const paintNote = row.link.paintIndex != null ? ` Paint ${row.link.paintIndex}.` : '';
-    const notes = `Float ${row.parsed.text}.${paintNote} ${estimate.basis}.`;
+    const seed = (row.holding.notes || '').match(/Seed\s+\d+/i);
+    const notes = `Float ${row.parsed.text}.${paintNote}${seed ? ` ${seed[0]}.` : ''} ${estimate.basis}.`;
     const previous = row.holding.unitMarketValue;
     const moved = previous == null || Math.abs(previous - eur) >= 0.01;
     row.holding.unitMarketValue = eur;

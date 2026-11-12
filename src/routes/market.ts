@@ -247,6 +247,16 @@ router.post(
   }),
 );
 
+router.delete(
+  '/push',
+  asyncRoute(async (req, res) => {
+    const userId = owner(req as AuthRequest);
+    const endpoint = asText(req.body?.endpoint, 'El dispositivo', 500);
+    await PushSub.deleteOne({ endpoint, userId });
+    res.json({ ok: true });
+  }),
+);
+
 router.get(
   '/csfloat',
   asyncRoute(async (req, res) => {

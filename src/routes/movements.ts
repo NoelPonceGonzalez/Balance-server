@@ -4,6 +4,7 @@ import { authenticateToken, type AuthRequest } from '../middleware/auth.js';
 import { asyncRoute, HttpError } from '../http.js';
 import { asDay, asId, asMoney, asOptionalMoney, asText, asTicker, asType } from '../validate.js';
 import { createMovement, deleteMovement, updateMovement, type MovementInput } from '../services/ledger.js';
+import { syncInvestPlans } from '../services/invest-watch.js';
 
 const router = Router();
 router.use(authenticateToken);
@@ -61,7 +62,9 @@ router.get(
 router.post(
   '/',
   asyncRoute(async (req, res) => {
-    const result = await createMovement(owner(req as AuthRequest), readInput(req.body || {}));
+    const userId = owner(req as AuthRequest);
+    const result = await createMovement(userId, readInput(req.body || {}));
+    await syncInvestPlans(userId);
     res.status(201).json(result);
   }),
 );
@@ -69,7 +72,9 @@ router.post(
 router.patch(
   '/:id',
   asyncRoute(async (req, res) => {
-    const result = await updateMovement(owner(req as AuthRequest), asId(req.params.id, 'El movimiento') as string, readInput(req.body || {}));
+    const userId = owner(req as AuthRequest);
+    const result = await updateMovement(userId, asId(req.params.id, 'El movimiento') as string, readInput(req.body || {}));
+    await syncInvestPlans(userId);
     res.json(result);
   }),
 );
@@ -77,7 +82,9 @@ router.patch(
 router.delete(
   '/:id',
   asyncRoute(async (req, res) => {
-    await deleteMovement(owner(req as AuthRequest), asId(req.params.id, 'El movimiento') as string);
+    const userId = owner(req as AuthRequest);
+    await deleteMovement(userId, asId(req.params.id, 'El movimiento') as string);
+    await syncInvestPlans(userId);
     res.json({ ok: true });
   }),
 );

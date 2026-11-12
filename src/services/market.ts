@@ -28,6 +28,7 @@ import { resolveSkinLink, skinBaseName } from '../domain/skins.js';
 import { csfloatBoard, scheduleSkinRefresh, searchSkins } from './skins.js';
 import { sendToUser } from './push.js';
 import { checkPurchaseWatches, offerIdentity, purchasesFor } from './watches.js';
+import { checkInvestPlans, investCoins } from './invest-watch.js';
 import { checkSkinWatches, checkTrackedListings } from './csfloat-listings.js';
 import { withMoves } from './story.js';
 
@@ -501,6 +502,7 @@ async function doRefresh() {
     if (source === 'coingecko' && externalId && !coins.includes(externalId)) coins.push(externalId);
     if (source === 'yahoo' && externalId && !listings.includes(externalId)) listings.push(externalId);
   }
+  for (const asset of await investCoins()) if (!coins.includes(asset)) coins.push(asset);
   try {
     const coinQuotes = await fetchCoins(coins);
     const got = new Set(coinQuotes.map((quote) => quote.externalId));
@@ -531,6 +533,11 @@ async function doRefresh() {
   void listed;
   await applyQuotes(fx);
   await checkAlerts();
+  try {
+    await checkInvestPlans();
+  } catch (error) {
+    console.error('plan de compras', error instanceof Error ? error.message : error);
+  }
   try {
     await checkPurchaseWatches();
   } catch (error) {

@@ -11,6 +11,7 @@ import { asDay, asId, asMoney, asOptionalMoney, asPicture, asReceipt, asText } f
 import { todayKey } from '../domain/finance.js';
 import { createMovement, deleteMovement, forecastForPlan, forecastPlanList, releasePlanCash } from '../services/ledger.js';
 import { listDueFixed, remindDuePayments } from '../services/plan-reminders.js';
+import { breakEvenTarget, editBuy, fillRefs, investView, readBuys, readWatch, settleBuy, syncInvestPlan } from '../services/invest-watch.js';
 
 const router = Router();
 router.use(authenticateToken);
@@ -146,7 +147,7 @@ function readPlan(body: Record<string, unknown>) {
     savingsDay: body.savingsDay == null || body.savingsDay === '' ? null : Math.min(31, Math.max(1, Math.round(asMoney(body.savingsDay, 'El día de ahorro')))),
     openingBalance: asMoney(body.openingBalance ?? 0, 'El saldo inicial', true),
     startDate: asDay(body.startDate, 'La fecha de inicio'),
-    targetAmount: asMoney(body.targetAmount, 'El objetivo'),
+    targetAmount: asMoney(body.targetAmount ?? 0, 'El objetivo', body.kind === 'inversion' && Array.isArray(body.buys)),
     targetDate: asDay(body.targetDate, 'La fecha objetivo'),
     monthlySavings: asMoney(body.monthlySavings ?? 0, 'El ahorro mensual', true),
     linkedAccountIds: Array.isArray(body.linkedAccountIds) ? body.linkedAccountIds.map((id) => asId(id, 'La cuenta')) : [],
@@ -189,6 +190,51 @@ function readPlan(body: Record<string, unknown>) {
   };
 }
 
+/** Un plan de inversión con compras por tandas lleva su vigilancia y su meta es volver a positivo. */
+async function withBuys(userId: string, body: Record<string, unknown>, data: ReturnType<typeof readPlan>, previous: Parameters<typeof readWatch>[1], previousBuys: Parameters<typeof readBuys>[1] = []) {
+  if (data.kind !== 'inversion' || !Array.isArray(body.buys)) return data;
+  const buys = readBuys(body.buys, previousBuys);
+  const user = await User.findById(userId).select('timezone');
+  const today = todayKey(user?.timezone || 'Europe/Madrid');
+  const watch = await fillRefs(buys, readWatch(body.watch, previous), today);
+  const targetAmount = await breakEvenTarget(userId, data.linkedAccountIds[0] || null, buys);
+  return { ...data, field: data.field || 'Cripto', targetAmount, buys, watch };
+}
+
+router.post(
+  '/:id/compra',
+  asyncRoute(async (req, res) => {
+    const userId = owner(req as AuthRequest);
+    const body = (req.body || {}) as Record<string, unknown>;
+    const price = body.priceEur == null || body.priceEur === '' ? null : asMoney(body.priceEur, 'El precio de la compra');
+    const plan = await settleBuy(userId, asId(req.params.id, 'El plan') as string, asText(body.buyId, 'La compra', 40), body.done === true, price);
+    const forecast = await forecastForPlan(plan, userId);
+    res.json({ plan, forecast });
+  }),
+);
+
+router.patch(
+  '/:id/tanda/:buyId',
+  asyncRoute(async (req, res) => {
+    const userId = owner(req as AuthRequest);
+    const body = (req.body || {}) as Record<string, unknown>;
+    const change = { amount: asMoney(body.amount, 'El importe de la tanda'), date: body.date ? asDay(body.date, 'La fecha de la tanda') : '' };
+    const plan = await editBuy(userId, asId(req.params.id, 'El plan') as string, asText(req.params.buyId, 'La tanda', 40), change);
+    const forecast = await forecastForPlan(plan, userId);
+    res.json({ plan, forecast });
+  }),
+);
+
+router.delete(
+  '/:id/tanda/:buyId',
+  asyncRoute(async (req, res) => {
+    const userId = owner(req as AuthRequest);
+    const plan = await editBuy(userId, asId(req.params.id, 'El plan') as string, asText(req.params.buyId, 'La tanda', 40), null);
+    const forecast = await forecastForPlan(plan, userId);
+    res.json({ plan, forecast });
+  }),
+);
+
 router.get(
   '/',
   asyncRoute(async (req, res) => {
@@ -196,15 +242,18 @@ router.get(
     const plansPromise = Plan.find({ $or: [{ userId }, { 'members.userId': userId }] }).sort({ createdAt: -1 });
     const remindPromise = remindDuePayments(userId);
     const plans = await plansPromise;
+    for (const plan of plans) if (String(plan.userId) === userId) await syncInvestPlan(plan);
     const withForecast = await forecastPlanList(userId, plans);
     await remindPromise;
+    const invests = await Promise.all(withForecast.map((row) => (row.plan.kind === 'inversion' && row.plan.buys?.length ? investView(userId, row.plan) : null)));
     res.json({
-      plans: withForecast.map((row) => {
+      plans: withForecast.map((row, index) => {
         const plan = hideReceipts(row.plan);
         return {
           plan,
           forecast: row.forecast,
           ...(row.plan.kind === 'gastos' ? { split: splitOf(row.plan) } : {}),
+          ...(invests[index] ? { invest: invests[index] } : {}),
         };
       }),
     });
@@ -299,7 +348,8 @@ router.post(
       res.status(201).json({ plan, forecast: await forecastForPlan(plan, userId), split: splitOf(plan) });
       return;
     }
-    const plan = await Plan.create({ userId, ...readPlan(body) });
+    const plan = await Plan.create({ userId, ...(await withBuys(userId, body, readPlan(body), null)) });
+    await syncInvestPlan(plan);
     await remindDuePayments(userId);
     const forecast = await forecastForPlan(plan, userId);
     res.status(201).json({ plan, forecast });
@@ -314,10 +364,12 @@ router.patch(
     const existing = await Plan.findOne({ _id: id, userId });
     if (!existing) throw new HttpError(404, 'Ese plan no existe.');
     if (existing.kind === 'gastos') throw new HttpError(400, 'Este reparto se cambia desde sus gastos.');
-    const plan = await Plan.findOneAndUpdate({ _id: id, userId }, readPlan(req.body || {}), {
+    const body = (req.body || {}) as Record<string, unknown>;
+    const plan = await Plan.findOneAndUpdate({ _id: id, userId }, await withBuys(userId, body, readPlan(body), existing.watch, existing.buys || []), {
       new: true,
     });
     if (!plan) throw new HttpError(404, 'Ese plan no existe.');
+    await syncInvestPlan(plan);
     await remindDuePayments(userId);
     const forecast = await forecastForPlan(plan, userId);
     res.json({ plan, forecast });
@@ -754,6 +806,7 @@ router.delete(
     }
     if (String(plan.userId) !== userId) throw new HttpError(404, 'Ese plan no existe.');
     await releasePlanCash(userId, String(plan._id));
+    await Notification.deleteMany({ userId, quoteKey: { $regex: `^plan-inv:${plan._id}:` } });
     await plan.deleteOne();
     res.json({ ok: true });
   }),

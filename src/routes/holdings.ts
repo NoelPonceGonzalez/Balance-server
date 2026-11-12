@@ -6,6 +6,7 @@ import { asyncRoute, HttpError } from '../http.js';
 import { asClass, asCurrency, asId, asMoney, asOptionalMoney, asRate, asSection, asText } from '../validate.js';
 import { roundMoney } from '../domain/finance.js';
 import { recordSnapshot } from '../services/ledger.js';
+import { syncInvestPlans } from '../services/invest-watch.js';
 import { attachQuote, priceAt } from '../services/market.js';
 import { refreshSkinHoldings } from '../services/skins.js';
 import { isSkinMarketName, skinBaseName } from '../domain/skins.js';
@@ -114,6 +115,7 @@ router.post(
         console.error('skins', error);
       }
     }
+    await syncInvestPlans(userId);
     const saved = await Holding.findById(holding._id);
     res.status(201).json({ holding: saved, quoteError });
   }),
@@ -181,6 +183,7 @@ router.patch(
         console.error('skins', error);
       }
     }
+    await syncInvestPlans(userId);
     res.json({ holding: await Holding.findById(holding._id) });
   }),
 );
@@ -192,6 +195,7 @@ router.delete(
     const deleted = await Holding.findOneAndDelete({ _id: asId(req.params.id, 'El activo'), userId });
     if (!deleted) throw new HttpError(404, 'Ese activo no existe.');
     await recordSnapshot(userId);
+    await syncInvestPlans(userId);
     res.json({ ok: true });
   }),
 );
