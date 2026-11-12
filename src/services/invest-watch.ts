@@ -1,4 +1,4 @@
-import { buyLeft, fillBuys, investNotices, INVEST_ASSETS, type InvestBuy, type InvestFill, type InvestMove, type InvestWatch } from '../domain/invest.js';
+import { buyLeft, fillBuys, investNotices, momentBand, INVEST_ASSETS, type InvestBuy, type InvestFill, type InvestMove, type InvestWatch, type MomentBand } from '../domain/invest.js';
 import { todayKey } from '../domain/finance.js';
 import { HttpError } from '../http.js';
 import { Holding } from '../models/Holding.js';
@@ -281,6 +281,16 @@ export async function investView(userId: string, plan: { linkedAccountIds?: unkn
   return { assets: rows, ratio: btc && eth ? eth / btc : null };
 }
 
+const MOMENT_PICTURE: Partial<Record<MomentBand, string>> = {
+  great: '/icons/moment-great.png',
+  good: '/icons/moment-good.png',
+  bad: '/icons/moment-wait.png',
+};
+
+function momentPicture(band: MomentBand | undefined): string | null {
+  return (band && MOMENT_PICTURE[band]) || null;
+}
+
 export async function investCoins(): Promise<string[]> {
   const assets = await Plan.distinct('buys.asset', { kind: 'inversion', 'buys.done': false });
   return assets.map(String).filter((asset) => Boolean(INVEST_ASSETS[asset]));
@@ -291,6 +301,8 @@ export async function checkInvestPlans(): Promise<void> {
   if (!plans.length) return;
   const assets = [...new Set(plans.flatMap((plan) => (plan.buys || []).map((buy) => buy.asset)))];
   const prices = await pricesFor(assets);
+  const quotes = await Quote.find({ key: { $in: assets.map((asset) => `coingecko:${asset}`) } }).select('externalId image changePct');
+  const quoteOf = new Map(quotes.map((row) => [row.externalId, row]));
   const zones = new Map<string, string>();
   for (const plan of plans) {
     await syncInvestPlan(plan);
@@ -320,10 +332,37 @@ export async function checkInvestPlans(): Promise<void> {
     };
     const refCount = watch.refs.length;
     watch = await fillRefs(buys, watch, today);
-    const { notices, fired } = investNotices({ planId: String(plan._id), planName: plan.name, buys, watch, prices, today, stamp: Date.now() });
+    const accountId = plan.linkedAccountIds?.[0] ? String(plan.linkedAccountIds[0]) : null;
+    const holdings = accountId
+      ? await Holding.find({ userId, accountId, quoteSource: 'coingecko', quoteId: { $in: assets } }).select('quoteId quantity costBasis')
+      : [];
+    const moments = [...new Set(buys.filter((buy) => !buy.done).map((buy) => buy.asset))].flatMap((asset) => {
+      const price = prices[asset];
+      if (price == null || !(price > 0)) return [];
+      const own = holdings.filter((row) => row.quoteId === asset);
+      const quantity = own.reduce((sum, row) => sum + row.quantity, 0);
+      const cost = own.reduce((sum, row) => sum + (row.costBasis ?? 0), 0);
+      const quote = quoteOf.get(asset);
+      const ref = watch.refs.find((row) => row.asset === asset);
+      const zone = watch.zones.find((row) => row.asset === asset);
+      return [{
+        asset,
+        band: momentBand({
+          price,
+          zone: zone?.belowEur ?? null,
+          average: quantity > 0 && cost > 0 ? cost / quantity : null,
+          ref: ref?.priceEur ?? null,
+          day: quote?.changePct ?? null,
+          drop: watch.dropPct,
+          rise: watch.risePct,
+        }),
+      }];
+    });
+    const { notices, fired } = investNotices({ planId: String(plan._id), planName: plan.name, buys, watch, prices, today, stamp: Date.now(), moments });
     for (const notice of notices) {
       const exists = await Notification.exists({ userId, quoteKey: notice.key });
       if (exists) continue;
+      const image = momentPicture(notice.band) || (notice.asset ? quoteOf.get(notice.asset)?.image || null : null);
       await Notification.create({
         userId,
         quoteKey: notice.key,
@@ -332,8 +371,9 @@ export async function checkInvestPlans(): Promise<void> {
         direction: notice.direction,
         changePct: notice.changePct,
         priceEur: notice.priceEur,
+        image,
       });
-      void sendToUser(userId, { title: notice.title, body: notice.body, url: '/' }).catch(() => undefined);
+      void sendToUser(userId, { title: notice.title, body: notice.body, url: '/', image, tag: notice.tag || notice.key }).catch(() => undefined);
     }
     const sameFired = fired.length === watch.fired.length && fired.every((flag) => watch.fired.includes(flag));
     if (!sameFired || watch.refs.length !== refCount) {

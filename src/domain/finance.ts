@@ -875,7 +875,7 @@ function ledgerEvents(plan: SavingsPlanInput, fromDay: string, endDay: string, t
         delta: income.amount,
         tone: 'in',
         markKey: income.id ? `income:${income.id}` : undefined,
-        ...seal(false, income.paid === true || (automatic && fixedPaid(plan, income.id ? `income:${income.id}` : undefined, day, today))),
+        ...seal(income.absorbed === true, income.paid === true || (automatic && fixedPaid(plan, income.id ? `income:${income.id}` : undefined, day, today))),
         automatic,
       });
     }
@@ -992,7 +992,7 @@ function eventAmount(events: PlanEvent[], day: string, includeExpected: boolean,
   let total = 0;
   const strict = Boolean(settledThrough && day <= settledThrough);
   for (const event of events) {
-    if (event.date.slice(0, 10) !== day) continue;
+    if (event.date.slice(0, 10) !== day || event.absorbed) continue;
     if (event.status === 'expected') {
       if (!includeExpected || (strict && event.paid !== true)) continue;
     } else if (strict && event.paid !== true) continue;

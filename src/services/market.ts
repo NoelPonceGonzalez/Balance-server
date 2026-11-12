@@ -438,6 +438,7 @@ export async function checkAlerts() {
       continue;
     }
     const tell = async (title: string, body: string, direction: 'up' | 'down') => {
+      if (!(await Alert.exists({ _id: alert._id, enabled: { $ne: false }, watching: true }))) return;
       await Notification.create({
         userId,
         quoteKey: quote.key,
@@ -446,8 +447,9 @@ export async function checkAlerts() {
         direction,
         changePct: quote.changePct,
         priceEur: quote.priceEur,
+        image: quote.image,
       });
-      await sendToUser(userId, { title, body, url: '/' });
+      await sendToUser(userId, { title, body, url: '/', image: quote.image, tag: quote.key });
     };
     if (band.fire && quote.changePct != null && alert.thresholdPct > 0) {
       const verb = band.fire === 'up' ? 'sube' : 'baja';

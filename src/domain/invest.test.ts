@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { fillBuys, investNotices, type InvestBuy, type InvestSlot, type InvestWatch } from './invest.ts';
+import { fillBuys, investNotices, momentBand, type InvestBuy, type InvestSlot, type InvestWatch, type MomentBand } from './invest.ts';
 
 const buys: InvestBuy[] = [
   { id: 'b1', asset: 'bitcoin', amount: 2000, date: '2026-11-20', done: false },
@@ -24,8 +24,8 @@ function watch(extra: Partial<InvestWatch> = {}): InvestWatch {
   };
 }
 
-function run(prices: Record<string, number>, today = '2026-11-14', state = watch(), list = buys) {
-  return investNotices({ planId: 'p', planName: 'Cripto', buys: list, watch: state, prices, today, stamp: 1 });
+function run(prices: Record<string, number>, today = '2026-11-14', state = watch(), list = buys, moments: { asset: string; band: MomentBand }[] = []) {
+  return investNotices({ planId: 'p', planName: 'Cripto', buys: list, watch: state, prices, today, stamp: 1, moments });
 }
 
 describe('investNotices', () => {
@@ -85,6 +85,43 @@ describe('investNotices', () => {
     const half = buys.map((buy) => (buy.id === 'b1' ? { ...buy, spent: 1200 } : buy));
     const day = run({ bitcoin: 66000, ethereum: 1840 }, '2026-11-20', watch(), half);
     assert.equal(day.notices[0].title, 'Hoy toca comprar 800 € de Bitcoin');
+  });
+
+  it('avisa al entrar en buen momento y no lo repite mientras siga', () => {
+    const prices = { bitcoin: 65000, ethereum: 1840 };
+    const first = run(prices, '2026-11-14', watch(), buys, [{ asset: 'bitcoin', band: 'good' }]);
+    const moment = first.notices.find((item) => item.tag === 'moment:p:bitcoin');
+    assert.equal(moment?.title, 'Bitcoin está en buen momento para comprar');
+    assert.match(moment?.body || '', /Te quedan 3\.000 €/);
+    const again = run(prices, '2026-11-14', watch({ fired: first.fired }), buys, [{ asset: 'bitcoin', band: 'good' }]);
+    assert.equal(again.notices.some((item) => item.tag === 'moment:p:bitcoin'), false);
+  });
+
+  it('al pasar de buen momento a muy bueno avisa, y al volver a bueno se calla', () => {
+    const prices = { bitcoin: 65000, ethereum: 1840 };
+    const better = run(prices, '2026-11-14', watch({ fired: ['moment:bitcoin:good'] }), buys, [{ asset: 'bitcoin', band: 'great' }]);
+    assert.equal(better.notices.find((item) => item.tag === 'moment:p:bitcoin')?.title, 'Bitcoin está en un momento muy bueno para comprar');
+    const back = run(prices, '2026-11-14', watch({ fired: better.fired }), buys, [{ asset: 'bitcoin', band: 'good' }]);
+    assert.equal(back.notices.some((item) => item.tag === 'moment:p:bitcoin'), false);
+    assert.ok(back.fired.includes('moment:bitcoin:good'));
+  });
+
+  it('avisa para esperar y, al volver a normal, no manda otro aviso', () => {
+    const prices = { bitcoin: 72000, ethereum: 1840 };
+    const wait = run(prices, '2026-11-14', watch({ risePct: 0, zones: [] }), buys, [{ asset: 'bitcoin', band: 'bad' }]);
+    assert.equal(wait.notices.find((item) => item.tag === 'moment:p:bitcoin')?.title, 'Bitcoin: mejor esperar para comprar');
+    const calm = run({ bitcoin: 66000, ethereum: 1840 }, '2026-11-14', watch({ fired: wait.fired }), buys, [{ asset: 'bitcoin', band: 'normal' }]);
+    assert.equal(calm.notices.some((item) => item.tag === 'moment:p:bitcoin'), false);
+    assert.ok(calm.fired.includes('moment:bitcoin:normal'));
+  });
+});
+
+describe('momentBand', () => {
+  it('lee zona, media, referencia y el día con los mismos cortes que la ficha', () => {
+    assert.equal(momentBand({ price: 65661, zone: 61300, average: 82022, ref: 66118, day: -0.96, drop: 5, rise: 8 }), 'normal');
+    assert.equal(momentBand({ price: 64000, zone: null, average: 80000, ref: 66000, day: 0, drop: 5, rise: 8 }), 'good');
+    assert.equal(momentBand({ price: 61000, zone: 61300, average: 82022, ref: 66118, day: -4, drop: 5, rise: 8 }), 'great');
+    assert.equal(momentBand({ price: 90000, zone: 61300, average: 70000, ref: 80000, day: 5, drop: 5, rise: 8 }), 'bad');
   });
 });
 

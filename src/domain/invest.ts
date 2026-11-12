@@ -146,6 +146,56 @@ export interface InvestNotice {
   asset: string | null;
   changePct: number | null;
   priceEur: number | null;
+  /** Agrupa el aviso del móvil para que un cambio de momento sustituya al anterior. */
+  tag?: string;
+  /** Buen momento, muy bueno o esperar. Sirve para elegir la imagen del aviso. */
+  band?: MomentBand;
+}
+
+/** Misma lectura que la ficha del plan: zona, media, referencia y día. */
+export type MomentBand = 'great' | 'good' | 'normal' | 'bad';
+
+const GOOD_SCORE = 1.5;
+const GREAT_SCORE = 3;
+const BAD_SCORE = -0.5;
+
+/** Puntúa el precio de ahora. El cliente usa los mismos umbrales para buscar a qué precio cambiaría. */
+export function momentBand(input: {
+  price: number;
+  zone: number | null;
+  average: number | null;
+  ref: number | null;
+  day: number | null;
+  drop: number;
+  rise: number;
+}): MomentBand {
+  let score = 0;
+  const { price } = input;
+  if (input.zone != null && input.zone > 0) {
+    const gap = (price / input.zone - 1) * 100;
+    if (gap <= 0) score += 2;
+    else if (gap <= 5) score += 0.5;
+  }
+  if (input.average != null && input.average > 0) {
+    const gap = (price / input.average - 1) * 100;
+    if (gap < -5) score += 1;
+    else if (gap > 5) score -= 0.5;
+  }
+  if (input.ref != null && input.ref > 0) {
+    const change = (price / input.ref - 1) * 100;
+    if (change <= -input.drop) score += 1;
+    else if (change <= -2) score += 0.5;
+    else if (change >= input.rise) score -= 1;
+    else if (change >= 3) score -= 0.5;
+  }
+  if (input.day != null) {
+    if (input.day <= -3) score += 0.5;
+    else if (input.day >= 4) score -= 0.5;
+  }
+  if (score >= GREAT_SCORE) return 'great';
+  if (score >= GOOD_SCORE) return 'good';
+  if (score <= BAD_SCORE) return 'bad';
+  return 'normal';
 }
 
 export function assetName(asset: string): string {
@@ -184,8 +234,10 @@ export function investNotices(input: {
   prices: Record<string, number | null | undefined>;
   today: string;
   stamp: number;
+  /** Lectura de momento de cada moneda. Si no viene, el plan no avisa por buen momento. */
+  moments?: { asset: string; band: MomentBand }[];
 }): { notices: InvestNotice[]; fired: string[] } {
-  const { planId, planName, buys, watch, prices, today, stamp } = input;
+  const { planId, planName, buys, watch, prices, today, stamp, moments = [] } = input;
   const notices: InvestNotice[] = [];
   const fired = new Set(watch.fired);
   const pending = buys.filter((buy) => !buy.done);
@@ -299,6 +351,39 @@ export function investNotices(input: {
     } else if (ratio < watch.ratioAbove * 0.98) {
       fired.delete(flag);
     }
+  }
+
+  for (const moment of moments) {
+    if (!assets.includes(moment.asset)) continue;
+    const prefix = `moment:${moment.asset}:`;
+    const previous = [...fired].find((flag) => flag.startsWith(prefix)) || '';
+    for (const flag of [...fired]) if (flag.startsWith(prefix)) fired.delete(flag);
+    fired.add(`${prefix}${moment.band}`);
+    if (moment.band === 'normal' || previous === `${prefix}${moment.band}`) continue;
+    if (moment.band === 'good' && previous === `${prefix}great`) continue;
+    const price = prices[moment.asset];
+    if (price == null || !(price > 0)) continue;
+    const name = assetName(moment.asset);
+    const left = waitingFor(buys, moment.asset);
+    const title = moment.band === 'great'
+      ? `${name} está en un momento muy bueno para comprar`
+      : moment.band === 'good'
+        ? `${name} está en buen momento para comprar`
+        : `${name}: mejor esperar para comprar`;
+    const body = moment.band === 'bad'
+      ? `Va por ${euros(price)}. Te quedan ${euros(left)} para ${name} en ${planName}. El plan marca esperar.`
+      : `Va por ${euros(price)}. Te quedan ${euros(left)} para ${name} en ${planName}.`;
+    notices.push({
+      key: `plan-inv:${planId}:moment:${moment.asset}:${moment.band}:${stamp}`,
+      tag: `moment:${planId}:${moment.asset}`,
+      band: moment.band,
+      title,
+      body,
+      direction: moment.band === 'bad' ? 'up' : 'down',
+      asset: moment.asset,
+      changePct: null,
+      priceEur: price,
+    });
   }
 
   return { notices, fired: [...fired] };

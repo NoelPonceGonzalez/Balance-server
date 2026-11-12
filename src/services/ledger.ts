@@ -995,6 +995,51 @@ export async function releasePlanCash(userId: string, planId: string) {
   for (const move of plan.cashMoves || []) await forgetMove(userId, move.movementId);
 }
 
+const MOVE_LABEL: Record<string, string> = {
+  income: 'Ingreso',
+  expense: 'Gasto',
+  buy: 'Compra',
+  sell: 'Venta',
+  fee: 'Comisión',
+  transfer: 'Traspaso',
+  deposit: 'Ingreso',
+  withdrawal: 'Retirada',
+  reward: 'Interés',
+  adjustment: 'Ajuste',
+};
+
+type OutsideMove = { id: string; name: string; amount: number; date: string; paid: true; absorbed: true };
+
+/** Lo que ha movido el efectivo de la cuenta del plan sin salir del plan: ya está en el saldo, se enseña y no se resta otra vez. */
+async function outsideMoves(userId: string, accountId: string, from: string, today: string): Promise<{ expenses: OutsideMove[]; incomes: OutsideMove[] }> {
+  const [rows, plans] = await Promise.all([
+    Movement.find({ userId, date: { $gte: from.slice(0, 10), $lte: today }, $or: [{ accountId }, { counterAccountId: accountId }] })
+      .select('type date description effects')
+      .lean(),
+    Plan.find({ userId }).select('cashMoves').lean(),
+  ]);
+  const fromPlans = new Set(plans.flatMap((plan) => (plan.cashMoves || []).map((move) => String(move.movementId))));
+  const expenses: OutsideMove[] = [];
+  const incomes: OutsideMove[] = [];
+  for (const row of rows) {
+    if (fromPlans.has(String(row._id))) continue;
+    const effects = row.effects as { applied?: boolean; accountDeltas?: { accountId: string; amount: number }[] } | null;
+    if (!effects?.applied) continue;
+    const delta = roundMoney((effects.accountDeltas || []).filter((item) => String(item.accountId) === accountId).reduce((sum, item) => sum + Number(item.amount || 0), 0));
+    if (Math.abs(delta) < 0.005) continue;
+    const item: OutsideMove = {
+      id: `move:${String(row._id)}`,
+      name: row.description?.trim() || MOVE_LABEL[row.type] || 'Movimiento',
+      amount: Math.abs(delta),
+      date: String(row.date).slice(0, 10),
+      paid: true,
+      absorbed: true,
+    };
+    (delta < 0 ? expenses : incomes).push(item);
+  }
+  return { expenses, incomes };
+}
+
 export async function forecastForPlan(
   plan: {
     _id?: unknown;
@@ -1073,6 +1118,9 @@ export async function forecastForPlan(
   const mirrored = linked.length === 1 && linked[0]?.currency === 'EUR';
   const liveCash = !mirrored && kind === 'liquidez' && Boolean(slice && !slice.incomplete && linked.length === 1);
   const includedUntil = liveCash && linked[0]?.updatedAt ? todayKey(timezone, new Date(linked[0].updatedAt)) : '';
+  const outside = mirrored && kind === 'liquidez' && plan._id
+    ? await outsideMoves(userId, linked[0].id, plan.startDate, today)
+    : { expenses: [], incomes: [] };
   const forecast = forecastPlan(
     {
       openingBalance: opening,
@@ -1115,7 +1163,7 @@ export async function forecastForPlan(
           paid: item.paid === true,
           automatic,
         };
-      }),
+      }).concat(outside.expenses),
       incomes: (plan.incomes || []).map((item) => ({
         id: refId(item),
         name: item.name,
@@ -1124,7 +1172,7 @@ export async function forecastForPlan(
         status: item.status,
         paid: item.paid === true,
         automatic: item.automatic === true,
-      })),
+      })).concat(outside.incomes),
       scenarios: (plan.scenarios || []).map((item) => ({
         id: String(item._id),
         name: item.name,

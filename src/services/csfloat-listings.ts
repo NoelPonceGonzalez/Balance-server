@@ -347,6 +347,7 @@ async function tell(
   row: InstanceType<typeof TrackedListing>,
   change: { title: string; body: string; direction: 'up' | 'down'; priceEur: number | null },
 ): Promise<void> {
+  if (!(await TrackedListing.exists({ _id: row._id }))) return;
   const url = `https://csfloat.com/item/${row.listingId}`;
   const title = `${row.label}: ${change.title}`;
   await Notification.create({
@@ -361,7 +362,7 @@ async function tell(
     image: row.image,
     url,
   });
-  await sendToUser(String(row.userId), { title, body: change.body, url }).catch(() => undefined);
+  await sendToUser(String(row.userId), { title, body: change.body, url, image: row.image, tag: `tracked:${row.listingId}` }).catch(() => undefined);
 }
 
 const CHECK_GAP_MS = 5 * 60_000;
@@ -397,6 +398,7 @@ async function runTrackedCheck(): Promise<void> {
       continue;
     }
     if (current == null) continue;
+    if (!(await TrackedListing.exists({ _id: row._id }))) continue;
     row.lastCheckedAt = new Date();
     const floatNote = row.floatValue == null ? '' : ` Float ${row.floatValue.toFixed(4)}.`;
     if (current === 'gone' || (current.state !== 'listed' && current.state !== 'sold')) {
@@ -514,6 +516,7 @@ async function runSkinWatches(): Promise<void> {
       await row.save();
       continue;
     }
+    if (!(await SkinWatch.exists({ _id: row._id }))) continue;
     const before = row.lastBestEur;
     row.lastBestEur = floor.eur;
     if (floor.image) row.image = floor.image;
@@ -536,6 +539,6 @@ async function runSkinWatches(): Promise<void> {
       image: row.image,
       url: null,
     });
-    await sendToUser(String(row.userId), { title, body, url: '/' }).catch(() => undefined);
+    await sendToUser(String(row.userId), { title, body, url: '/', image: row.image, tag: `skin:${String(row._id)}` }).catch(() => undefined);
   }
 }

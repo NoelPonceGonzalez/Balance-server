@@ -235,8 +235,9 @@ router.post(
     const auth = asText(req.body?.keys?.auth, 'La clave', 200);
     if (!endpoint.startsWith('https://')) throw new HttpError(400, 'El dispositivo no es válido.');
     if (!pushPublicKey()) throw new HttpError(503, 'El servidor todavía no puede mandar avisos al móvil.');
+    const known = await PushSub.exists({ endpoint, userId });
     await PushSub.updateOne({ endpoint }, { $set: { userId, endpoint, p256dh, auth } }, { upsert: true });
-    const pending = await pushPendingOffers(userId);
+    const pending = known ? 0 : await pushPendingOffers(userId);
     if (req.body?.ping !== true) {
       res.json({ ok: true, sent: pending });
       return;
@@ -457,6 +458,7 @@ router.delete(
     const userId = owner(req as AuthRequest);
     const id = asId(req.params.id, 'El aviso');
     await Watch.updateOne({ _id: id, userId }, { $set: { enabled: false } });
+    await Notification.updateMany({ userId, quoteKey: new RegExp(`^listing:${id}:`), read: { $ne: true } }, { $set: { read: true } });
     res.json({ ok: true });
   }),
 );

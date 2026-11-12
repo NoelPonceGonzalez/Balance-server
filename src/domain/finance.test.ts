@@ -396,6 +396,28 @@ describe('planes de ahorro', () => {
     assert.equal(forecastPlan(plan, 3246.98, '2026-10-26').plannedToday, 3246.98);
   });
 
+  it('un movimiento de la cuenta hecho fuera del plan se ve en su mes y no se cuenta dos veces', () => {
+    const plan: SavingsPlanInput = {
+      openingBalance: 4061.98,
+      startDate: '2026-10-01',
+      targetAmount: 10000,
+      targetDate: '2027-06-30',
+      monthlySavings: 0,
+      mirrored: true,
+      recurring: [],
+      plannedExpenses: [{ id: 'move:a', name: 'CSFloat', amount: 270, date: '2026-11-12', paid: true, absorbed: true }],
+      incomes: [{ id: 'move:b', name: 'Ingreso', amount: 100, date: '2026-11-10', paid: true, absorbed: true }],
+    };
+    const november = planMonths(plan, '2026-11-12').find((month) => month.month === '2026-11');
+    const spend = november?.lines.find((line) => line.label === 'CSFloat');
+    const income = november?.lines.find((line) => line.label === 'Ingreso');
+    assert.equal(spend?.absorbed, true);
+    assert.equal(spend?.amount, -270);
+    assert.equal(income?.absorbed, true);
+    assert.equal(november?.lines.at(-1)?.balance, 4061.98);
+    assert.equal(forecastPlan(plan, 4061.98, '2026-11-12').plannedToday, 4061.98);
+  });
+
   it('un fijo pasado no entra hasta que se confirma', () => {
     const plan: SavingsPlanInput = {
       openingBalance: 1000,

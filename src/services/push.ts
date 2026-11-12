@@ -2,6 +2,8 @@ import mongoose from 'mongoose';
 import webpush from 'web-push';
 import { PushSub } from '../models/PushSub.js';
 import { Notification } from '../models/Notification.js';
+import { Watch } from '../models/Watch.js';
+import { offerIdentity } from './watches.js';
 
 function pair() {
   const publicKey = process.env.VAPID_PUBLIC_KEY?.trim();
@@ -41,7 +43,7 @@ function sameUser(userId: string) {
   return { userId: { $in: ids } };
 }
 
-export async function sendToUser(userId: string, payload: { title: string; body: string; url?: string | null }): Promise<PushResult> {
+export async function sendToUser(userId: string, payload: { title: string; body: string; url?: string | null; image?: string | null; tag?: string | null }): Promise<PushResult> {
   if (!prepare()) return { sent: 0, removed: 0, error: 'sin-claves' };
   const subs = await PushSub.find(sameUser(userId));
   if (!subs.length) return { sent: 0, removed: 0, error: 'sin-dispositivo' };
@@ -52,7 +54,13 @@ export async function sendToUser(userId: string, payload: { title: string; body:
     try {
       await webpush.sendNotification(
         { endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } },
-        JSON.stringify({ title: payload.title, body: payload.body, url: payload.url || '/' }),
+        JSON.stringify({
+          title: payload.title,
+          body: payload.body,
+          url: payload.url || '/',
+          image: payload.image || '',
+          tag: payload.tag || '',
+        }),
         { TTL: 12 * 60 * 60, urgency: 'high' },
       );
       sent += 1;
@@ -79,10 +87,21 @@ export function pushFailure(error: PushResult['error']): string {
   return 'El servicio de avisos del móvil ha rechazado el envío.';
 }
 
-/** Al activar el móvil, manda el aviso de compra que sigue pendiente. */
+const PENDING_MS = 12 * 60 * 60 * 1000;
+
+/** Al activar un móvil nuevo, manda la última oferta sin leer si su aviso sigue puesto y no se ha descartado. */
 export async function pushPendingOffers(userId: string): Promise<number> {
-  const note = await Notification.findOne({ ...sameUser(userId), quoteKey: /^listing:/ }).sort({ createdAt: -1 });
+  const note = await Notification.findOne({
+    ...sameUser(userId),
+    quoteKey: /^listing:/,
+    read: { $ne: true },
+    createdAt: { $gte: new Date(Date.now() - PENDING_MS) },
+  }).sort({ createdAt: -1 });
   if (!note) return 0;
-  const result = await sendToUser(userId, { title: note.title, body: note.body, url: note.url });
+  const identity = offerIdentity(note.quoteKey);
+  if (!identity) return 0;
+  const live = await Watch.exists({ _id: identity.watchId, enabled: { $ne: false }, passedIds: { $ne: identity.askId } });
+  if (!live) return 0;
+  const result = await sendToUser(userId, { title: note.title, body: note.body, url: note.url, image: note.image, tag: note.quoteKey });
   return result.sent;
 }

@@ -131,6 +131,7 @@ async function runPurchaseWatches(): Promise<void> {
         const quoteKey = `listing:${String(watch._id)}:${ask.id}`;
         const existing = await Notification.findOne({ userId: watch.userId, quoteKey });
         if (!existing) {
+          if (!(await Watch.exists({ _id: watch._id, enabled: { $ne: false }, passedIds: { $ne: ask.id } }))) break;
           const title = `Oferta: ${watch.label} por debajo de ${money(watch.below)}`;
           const body = `En ${ask.market} la han puesto a ${money(ask.eur)}. Es un anuncio nuevo de esa skin.`;
           await Notification.create({
@@ -147,7 +148,7 @@ async function runPurchaseWatches(): Promise<void> {
             image: ask.image,
             url: ask.url,
           });
-          await sendToUser(String(watch.userId), { title, body, url: ask.url });
+          await sendToUser(String(watch.userId), { title, body, url: ask.url, image: ask.image, tag: quoteKey });
         }
         seen.add(ask.id);
       }
