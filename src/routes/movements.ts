@@ -13,6 +13,10 @@ function owner(req: AuthRequest) {
   return req.userId as string;
 }
 
+function escaped(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 function readInput(body: Record<string, unknown>): MovementInput {
   const type = asType(body.type);
   const apply = body.applyToBalances !== false;
@@ -39,23 +43,39 @@ function readInput(body: Record<string, unknown>): MovementInput {
 }
 
 router.get(
+  '/count',
+  asyncRoute(async (req, res) => {
+    const count = await Movement.countDocuments({ userId: owner(req as AuthRequest) });
+    res.json({ count });
+  }),
+);
+
+router.get(
   '/',
   asyncRoute(async (req, res) => {
     const userId = owner(req as AuthRequest);
     const filter: Record<string, unknown> = { userId };
+    const and: Record<string, unknown>[] = [];
     const accountId = typeof req.query.accountId === 'string' ? req.query.accountId : '';
-    if (accountId) filter.$or = [{ accountId }, { counterAccountId: accountId }];
+    if (accountId) and.push({ $or: [{ accountId }, { counterAccountId: accountId }] });
+    const q = typeof req.query.q === 'string' ? req.query.q.trim() : '';
+    if (q) {
+      const pattern = new RegExp(escaped(q), 'i');
+      and.push({ $or: [{ description: pattern }, { category: pattern }] });
+    }
+    if (and.length) filter.$and = and;
     if (typeof req.query.type === 'string' && req.query.type) filter.type = req.query.type;
     const date: Record<string, string> = {};
     if (typeof req.query.from === 'string' && req.query.from) date.$gte = req.query.from;
     if (typeof req.query.to === 'string' && req.query.to) date.$lte = req.query.to;
     if (Object.keys(date).length) filter.date = date;
-    const movements = await Movement.find(filter).sort({ date: -1, createdAt: -1 }).limit(5000);
-    const q = typeof req.query.q === 'string' ? req.query.q.trim().toLowerCase() : '';
-    const filtered = q
-      ? movements.filter((item) => `${item.description} ${item.category}`.toLowerCase().includes(q))
-      : movements;
-    res.json({ movements: filtered });
+    const paging = req.query.page != null || req.query.pageSize != null;
+    const askedSize = Number(req.query.pageSize);
+    const askedPage = Number(req.query.page);
+    const pageSize = paging ? Math.min(Math.max(Number.isFinite(askedSize) && askedSize > 0 ? Math.floor(askedSize) : 2000, 1), 2000) : 5000;
+    const page = paging ? Math.max(Number.isFinite(askedPage) && askedPage > 0 ? Math.floor(askedPage) : 0, 0) : 0;
+    const movements = await Movement.find(filter).sort({ date: -1, createdAt: -1 }).skip(page * pageSize).limit(pageSize);
+    res.json({ movements, ...(paging ? { complete: movements.length < pageSize } : {}) });
   }),
 );
 
