@@ -1117,7 +1117,11 @@ export async function forecastForPlan(
   if (slice?.incomplete) notes.push('El plan no puede usar ese sitio hasta que el importe esté en euros.');
   const mirrored = linked.length === 1 && linked[0]?.currency === 'EUR';
   const liveCash = !mirrored && kind === 'liquidez' && Boolean(slice && !slice.incomplete && linked.length === 1);
-  const includedUntil = liveCash && linked[0]?.updatedAt ? todayKey(timezone, new Date(linked[0].updatedAt)) : '';
+  // El saldo de la cuenta ya es el efectivo de hoy. Nóminas y fijos hasta hoy van dentro
+  // de ese saldo: si se vuelven a sumar, la llegada no se mueve cuando el efectivo baja o sube.
+  const includedUntil = mirrored && kind === 'liquidez'
+    ? today
+    : liveCash && linked[0]?.updatedAt ? todayKey(timezone, new Date(linked[0].updatedAt)) : '';
   const outside = mirrored && kind === 'liquidez' && plan._id
     ? await outsideMoves(userId, linked[0].id, plan.startDate, today)
     : { expenses: [], incomes: [] };

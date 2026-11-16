@@ -600,6 +600,28 @@ describe('planes de ahorro', () => {
     assert.equal(forecast.plannedWithExpectedToday, 3200);
   });
 
+  it('el efectivo de hoy manda: una nómina ya cobrada no adelanta la llegada', () => {
+    const plan: SavingsPlanInput = {
+      openingBalance: 1683.96,
+      startDate: '2026-10-01',
+      targetAmount: 10000,
+      targetDate: '2027-06-30',
+      monthlySavings: 1150,
+      savingsDay: 31,
+      savingsPaid: ['2026-10-31'],
+      settled: [{ key: 'savings:2026-10-31', done: true, amount: 1150 }],
+      includedUntil: '2026-11-16',
+      recurring: [],
+      intervals: [{ id: 'coach', name: 'Entrenador', amount: 165, everyWeeks: 12, startDate: '2026-10-14', direction: 'out' }],
+      plannedExpenses: [],
+      incomes: [],
+    };
+    const low = forecastPlan(plan, 1683.96, '2026-11-16');
+    const high = forecastPlan({ ...plan, openingBalance: 2683.96 }, 2683.96, '2026-11-16');
+    assert.equal(low.plannedToday, 1683.96);
+    assert.ok(low.estimatedDate && high.estimatedDate && low.estimatedDate >= high.estimatedDate);
+  });
+
   it('avanza los días sin salirse del calendario', () => {
     assert.equal(addDays('2026-01-31', 1), '2026-02-01');
   });
