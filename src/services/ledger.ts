@@ -642,8 +642,7 @@ export async function getDashboard(userId: string, period: string) {
     if (links.length !== 1) continue;
     const linked = accounts.find((item) => String(item._id) === links[0]);
     if (!linked || linked.currency !== 'EUR') continue;
-    const includedUntil = linked.balanceUpdatedAt ? todayKey('Europe/Madrid', new Date(linked.balanceUpdatedAt)) : '';
-    const marked = markedLiquidity(plan, linked.balance, today, includedUntil);
+    const marked = markedLiquidity(plan, linked.balance, today, today);
     markedCash.set(links[0], { balance: marked.balance, planId: String(plan._id), flows: marked.flows, fixed: marked.fixed, touched: planHasCheck(plan) });
   }
   let cashDelta = 0;
@@ -1116,12 +1115,10 @@ export async function forecastForPlan(
   const opening = slice && !slice.incomplete ? slice.amount : plan.openingBalance;
   if (slice?.incomplete) notes.push('El plan no puede usar ese sitio hasta que el importe esté en euros.');
   const mirrored = linked.length === 1 && linked[0]?.currency === 'EUR';
-  const liveCash = !mirrored && kind === 'liquidez' && Boolean(slice && !slice.incomplete && linked.length === 1);
-  // El saldo de la cuenta ya es el efectivo de hoy. Nóminas y fijos hasta hoy van dentro
-  // de ese saldo: si se vuelven a sumar, la llegada no se mueve cuando el efectivo baja o sube.
-  const includedUntil = mirrored && kind === 'liquidez'
-    ? today
-    : liveCash && linked[0]?.updatedAt ? todayKey(timezone, new Date(linked[0].updatedAt)) : '';
+  // El plan enlazado no lleva un saldo propio. Liquidez lee el efectivo; inversión, la cripto,
+  // el ETF o las acciones; patrimonio, los dos. Lo de hoy hacia atrás ya está en esa cifra.
+  const followsWallet = Boolean(slice && !slice.incomplete && linked.length);
+  const includedUntil = followsWallet ? today : '';
   const outside = mirrored && kind === 'liquidez' && plan._id
     ? await outsideMoves(userId, linked[0].id, plan.startDate, today)
     : { expenses: [], incomes: [] };

@@ -1194,8 +1194,8 @@ export function forecastPlan(plan: SavingsPlanInput, realBalance: number | null,
   }
 
   const searchEnd = addDays(today, HORIZON_DAYS);
-  // El cierre de los meses sale del saldo del plan a día de hoy. La llegada tiene que seguir ese mismo saldo:
-  // si se parte del efectivo a secas, se pierden nóminas ya contadas y la fecha se va un mes más allá.
+  // La llegada sale del saldo de hoy. En un plan enlazado ese saldo ya es la cartera:
+  // el efectivo, o la inversión, con lo cobrado y lo gastado dentro. Hacia delante siguen la nómina y los gastos.
   const estimated =
     real == null
       ? null
