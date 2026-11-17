@@ -261,6 +261,36 @@ router.get(
   }),
 );
 
+router.post(
+  '/:id/probar',
+  asyncRoute(async (req, res) => {
+    const userId = owner(req as AuthRequest);
+    const plan = await Plan.findOne({ _id: asId(req.params.id, 'El plan'), userId });
+    if (!plan) throw new HttpError(404, 'Ese plan no existe.');
+    if (plan.kind === 'gastos') throw new HttpError(400, 'Un viaje no se prueba así.');
+    const body = (req.body || {}) as Record<string, unknown>;
+    const amount = asMoney(body.amount, 'El importe');
+    const date = asDay(body.date, 'La fecha');
+    const direction = body.direction === 'in' ? 'in' : 'out';
+    const named = asText(typeof body.name === 'string' ? body.name : '', 'El nombre', 80, false);
+    const forecast = await forecastForPlan(plan, userId, undefined, {
+      trial: { amount, date, direction, name: named || (direction === 'in' ? 'Entrada de prueba' : 'Salida de prueba') },
+    }) as { onDay?: number; monthClose?: number; estimatedDate: string | null };
+    if (typeof forecast.onDay !== 'number' || typeof forecast.monthClose !== 'number') {
+      throw new HttpError(400, 'Este plan no se puede probar.');
+    }
+    res.json({
+      saved: false,
+      date,
+      direction,
+      amount,
+      onDay: forecast.onDay,
+      monthClose: forecast.monthClose,
+      estimatedDate: forecast.estimatedDate,
+    });
+  }),
+);
+
 router.get(
   '/due',
   asyncRoute(async (req, res) => {

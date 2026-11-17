@@ -1269,6 +1269,48 @@ export function forecastPlan(plan: SavingsPlanInput, realBalance: number | null,
   };
 }
 
+/** Saldo al final de un día, con la misma cuenta que la serie del plan. */
+export function balanceOn(plan: SavingsPlanInput, today: string, day: string): number {
+  const gate = Array.isArray(plan.settled) ? today : undefined;
+  const end = day < plan.startDate ? plan.startDate : day;
+  return walk(plan, plan.openingBalance, plan.startDate, end, {
+    monthlySavings: plan.monthlySavings,
+    includeExpected: true,
+    settledThrough: gate,
+  }, null).endBalance;
+}
+
+/**
+ * Mira qué pasaría con un importe en una fecha. No escribe nada:
+ * el movimiento de prueba no existe y no entra en la renta.
+ */
+export function previewPlan(
+  plan: SavingsPlanInput,
+  realBalance: number | null,
+  today: string,
+  trial: { date: string; amount: number; direction: 'in' | 'out'; name: string },
+): PlanForecast & { onDay: number; monthClose: number } {
+  const next: SavingsPlanInput = {
+    ...plan,
+    plannedExpenses: [...plan.plannedExpenses],
+    incomes: [...plan.incomes],
+  };
+  const event: PlanEvent = {
+    name: trial.name,
+    amount: trial.amount,
+    date: trial.date,
+    paid: true,
+    status: 'confirmed',
+  };
+  if (trial.direction === 'out') next.plannedExpenses.push(event);
+  else next.incomes.push(event);
+  return {
+    ...forecastPlan(next, realBalance, today),
+    onDay: balanceOn(next, today, trial.date),
+    monthClose: balanceOn(next, today, monthEndIso(trial.date)),
+  };
+}
+
 export function pnlSlices(accounts: AccountSnap[], holdings: HoldingSnap[]): PnlSlice[] {
   const byId = new Map(accounts.map((account) => [account.id, account]));
   const slices: PnlSlice[] = [];

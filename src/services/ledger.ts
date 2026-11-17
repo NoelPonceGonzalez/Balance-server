@@ -15,6 +15,7 @@ import {
   analyzeMovements,
   applyMovementToBooks,
   forecastPlan,
+  previewPlan,
   movementFingerprint,
   planMonths,
   balanceMarked,
@@ -1067,6 +1068,7 @@ export async function forecastForPlan(
   },
   userId: string,
   shared?: { timezone: string; books: Books | null },
+  options?: { trial?: { date: string; amount: number; direction: 'in' | 'out'; name: string } },
 ) {
   if (plan.kind === 'gastos') {
     const timezone = shared?.timezone || (await User.findById(userId).select('timezone'))?.timezone || 'Europe/Madrid';
@@ -1095,7 +1097,7 @@ export async function forecastForPlan(
   let real: number | null = plan.manualRealBalance ?? null;
   const notes: string[] = [];
   const links = (plan.linkedAccountIds || []).map(String);
-  if (plan._id) await alignPlanCash(userId, String(plan._id));
+  if (plan._id && !options?.trial) await alignPlanCash(userId, String(plan._id));
   const books = links.length ? await loadBooks(userId) : shared ? shared.books : null;
   const linked = books ? books.accounts.filter((account) => links.includes(account.id)) : [];
   if (links.length) {
@@ -1124,8 +1126,7 @@ export async function forecastForPlan(
   const outside = mirrored && kind === 'liquidez' && plan._id
     ? await outsideMoves(userId, linked[0].id, plan.startDate, today)
     : { expenses: [], incomes: [] };
-  const forecast = forecastPlan(
-    {
+  const input = {
       openingBalance: opening,
       startDate: plan.startDate,
       targetAmount: plan.targetAmount,
@@ -1181,10 +1182,8 @@ export async function forecastForPlan(
         name: item.name,
         monthlySavings: item.monthlySavings,
       })),
-    },
-    real,
-    today,
-  );
+    };
+  const forecast = options?.trial ? previewPlan(input, real, today, options.trial) : forecastPlan(input, real, today);
   return {
     ...forecast,
     realBalance: real,

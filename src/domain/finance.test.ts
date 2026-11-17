@@ -7,6 +7,7 @@ import {
   applyMovementToBooks,
   assertNoSecret,
   forecastPlan,
+  previewPlan,
   forecastReached,
   planMonths,
   type SavingsPlanInput,
@@ -620,6 +621,24 @@ describe('planes de ahorro', () => {
     const high = forecastPlan({ ...plan, openingBalance: 2683.96 }, 2683.96, '2026-11-16');
     assert.equal(low.plannedToday, 1683.96);
     assert.ok(low.estimatedDate && high.estimatedDate && low.estimatedDate >= high.estimatedDate);
+  });
+
+  it('una salida de prueba baja el saldo y no toca el plan', () => {
+    const plan: SavingsPlanInput = {
+      openingBalance: 1000,
+      startDate: '2026-11-01',
+      targetAmount: 5000,
+      targetDate: '2027-12-31',
+      monthlySavings: 0,
+      recurring: [],
+      plannedExpenses: [],
+      incomes: [],
+    };
+    const seen = previewPlan(plan, 1000, '2026-11-17', { date: '2026-12-20', amount: 200, direction: 'out', name: 'Prueba' });
+    assert.equal(seen.onDay, 800);
+    assert.equal(seen.monthClose, 800);
+    assert.equal(plan.plannedExpenses.length, 0);
+    assert.equal(forecastPlan(plan, 1000, '2026-11-17').plannedWithExpectedToday, 1000);
   });
 
   it('avanza los días sin salirse del calendario', () => {
