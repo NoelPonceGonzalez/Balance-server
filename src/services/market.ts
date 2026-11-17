@@ -176,7 +176,7 @@ export async function searchMarket(query: string, assetClass?: string): Promise<
   const q = query.trim();
   if (q.length < 2) return [];
   const wantCrypto = !assetClass || assetClass === 'crypto';
-  const wantListed = !assetClass || assetClass === 'stock' || assetClass === 'etf';
+  const wantListed = !assetClass || assetClass === 'stock' || assetClass === 'etf' || assetClass === 'index';
   const [coins, listings] = await Promise.all([
     wantCrypto ? searchCoins(q).catch(() => []) : Promise.resolve([]),
     wantListed ? searchListings(q).catch(() => []) : Promise.resolve([]),
@@ -185,6 +185,7 @@ export async function searchMarket(query: string, assetClass?: string): Promise<
   if (assetClass === 'crypto') return ranked.filter((item) => item.source === 'coingecko');
   if (assetClass === 'etf') return ranked.filter((item) => item.kind === 'etf');
   if (assetClass === 'stock') return ranked.filter((item) => item.kind === 'stock');
+  if (assetClass === 'index') return ranked.filter((item) => item.kind === 'index');
   return ranked;
 }
 
@@ -214,7 +215,7 @@ async function searchListings(query: string): Promise<Candidate[]> {
   const allowed = new Set(['EQUITY', 'ETF', 'MUTUALFUND', 'INDEX']);
   return (data.quotes || []).flatMap((quote) => {
     if (!quote.symbol || !quote.quoteType || !allowed.has(quote.quoteType) || !isQuoteId('yahoo', quote.symbol)) return [];
-    const kind = quote.quoteType === 'EQUITY' ? 'stock' as const : 'etf' as const;
+    const kind = quote.quoteType === 'EQUITY' ? 'stock' as const : quote.quoteType === 'INDEX' ? 'index' as const : 'etf' as const;
     return [{
       source: 'yahoo' as const,
       externalId: quote.symbol,
@@ -344,6 +345,13 @@ function money(value: number): string {
   return new Intl.NumberFormat('es-ES', { style: 'currency', currency: 'EUR', minimumFractionDigits: 2, maximumFractionDigits: digits }).format(value);
 }
 
+function levelText(key: string, value: number): string {
+  if (key.startsWith('yahoo:^')) {
+    return `${new Intl.NumberFormat('es-ES', { maximumFractionDigits: 2 }).format(value)} puntos`;
+  }
+  return money(value);
+}
+
 function signedPct(value: number): string {
   const abs = new Intl.NumberFormat('es-ES', { minimumFractionDigits: 1, maximumFractionDigits: 1 }).format(Math.abs(value));
   return `${value > 0 ? '+' : '−'}${abs} %`;
@@ -434,10 +442,7 @@ export async function checkAlerts() {
       ? evaluateBand(quote.changePct ?? null, { thresholdPct: alert.thresholdPct, armed: alert.bandArmed })
       : { fire: null, armed: alert.bandArmed };
     alert.bandArmed = band.armed;
-    if (!alert.watching) {
-      await alert.save();
-      continue;
-    }
+    if (!alert.watching || alert.enabled === false) continue;
     const tell = async (title: string, body: string, direction: 'up' | 'down') => {
       if (!(await Alert.exists({ _id: alert._id, enabled: { $ne: false }, watching: true }))) return;
       await Notification.create({
@@ -456,7 +461,7 @@ export async function checkAlerts() {
       const verb = band.fire === 'up' ? 'sube' : 'baja';
       await tell(
         `Cotización de ${quote.name} ${verb}`,
-        `${signedPct(quote.changePct)} en ${quote.changeLabel}. Va por ${money(quote.priceEur)}.`,
+        `${signedPct(quote.changePct)} en ${quote.changeLabel}. Va por ${levelText(quote.key, quote.priceEur)}.`,
         band.fire,
       );
     }
@@ -465,8 +470,8 @@ export async function checkAlerts() {
       alert.aboveArmed = level.armed;
       if (level.fire) {
         await tell(
-          `Cotización de ${quote.name} ha pasado de ${money(alert.above)}`,
-          `Ahora va por ${money(quote.priceEur)}.`,
+          `Cotización de ${quote.name} ha pasado de ${levelText(quote.key, alert.above)}`,
+          `Ahora va por ${levelText(quote.key, quote.priceEur)}.`,
           'up',
         );
       }
@@ -476,13 +481,16 @@ export async function checkAlerts() {
       alert.belowArmed = level.armed;
       if (level.fire) {
         await tell(
-          `Cotización de ${quote.name} ha bajado de ${money(alert.below)}`,
-          `Ahora va por ${money(quote.priceEur)}.`,
+          `Cotización de ${quote.name} ha bajado de ${levelText(quote.key, alert.below)}`,
+          `Ahora va por ${levelText(quote.key, quote.priceEur)}.`,
           'down',
         );
       }
     }
-    await alert.save();
+    await Alert.updateOne(
+      { _id: alert._id, watching: true, enabled: { $ne: false } },
+      { $set: { bandArmed: alert.bandArmed, aboveArmed: alert.aboveArmed, belowArmed: alert.belowArmed } },
+    );
   }
 }
 
@@ -856,8 +864,8 @@ export async function signalsFor(userId: string, known?: Map<string, { quoteKey:
     const quote = byKey.get(alert.quoteKey);
     if (!quote) return [];
     const rules = [
-      alert.above != null ? `por encima de ${money(alert.above)}` : '',
-      alert.below != null ? `por debajo de ${money(alert.below)}` : '',
+      alert.above != null ? `por encima de ${levelText(alert.quoteKey, alert.above)}` : '',
+      alert.below != null ? `por debajo de ${levelText(alert.quoteKey, alert.below)}` : '',
       alert.thresholdPct > 0 ? `si el día se mueve más de un ${alert.thresholdPct} %` : '',
     ].filter(Boolean);
     const crossed = (alert.above != null && alert.aboveArmed === false) || (alert.below != null && alert.belowArmed === false);

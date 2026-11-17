@@ -1,12 +1,13 @@
 import { Router } from 'express';
 import { Wallet } from '../models/Wallet.js';
-import { authenticateToken, type AuthRequest } from '../middleware/auth.js';
+import { authenticateToken, requireGate, type AuthRequest } from '../middleware/auth.js';
 import { asyncRoute, HttpError } from '../http.js';
 import { asDay, asId, asMoney, asPicture, asText } from '../validate.js';
 import { walletSeries } from '../services/wallet-series.js';
 
 const router = Router();
 router.use(authenticateToken);
+router.use(requireGate);
 
 function owner(req: AuthRequest) {
   return req.userId as string;

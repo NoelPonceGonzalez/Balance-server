@@ -1,12 +1,13 @@
 import { Router } from 'express';
 import { EXTRA_PLACES, Extra } from '../models/Extra.js';
-import { authenticateToken, type AuthRequest } from '../middleware/auth.js';
+import { authenticateToken, requireGate, type AuthRequest } from '../middleware/auth.js';
 import { asyncRoute, HttpError } from '../http.js';
 import { asId, asMoney, asOptionalMoney, asText } from '../validate.js';
 import { recordSnapshot } from '../services/ledger.js';
 
 const router = Router();
 router.use(authenticateToken);
+router.use(requireGate);
 
 function owner(req: AuthRequest) {
   return req.userId as string;

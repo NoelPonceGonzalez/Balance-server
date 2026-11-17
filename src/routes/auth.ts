@@ -5,7 +5,7 @@ import jwt from 'jsonwebtoken';
 import { config } from '../config/env.js';
 import { User } from '../models/User.js';
 import { deleteUserData } from '../services/delete-user.js';
-import { authenticateToken, signToken, type AuthRequest } from '../middleware/auth.js';
+import { authenticateToken, signGate, signToken, type AuthRequest } from '../middleware/auth.js';
 import { asyncRoute, rateLimit } from '../http.js';
 import { HttpError } from '../http.js';
 import { mailEnabled, sendPasswordCode } from '../services/mail.js';
@@ -22,7 +22,7 @@ function attemptKey(field: 'login' | 'email') {
   };
 }
 
-function publicUser(user: { _id: unknown; name: string; username?: string | null; email: string; theme?: string; timezone?: string }) {
+function publicUser(user: { _id: unknown; name: string; username?: string | null; email: string; theme?: string; timezone?: string; lockHash?: string | null }) {
   return {
     id: String(user._id),
     name: user.name,
@@ -30,7 +30,35 @@ function publicUser(user: { _id: unknown; name: string; username?: string | null
     email: user.email,
     theme: user.theme || 'system',
     timezone: user.timezone || 'Europe/Madrid',
+    lock: Boolean(user.lockHash),
   };
+}
+
+function asPin(value: unknown): string {
+  const pin = typeof value === 'string' ? value.trim() : '';
+  if (!/^\d{4}$/.test(pin)) throw new HttpError(400, 'El código son 4 números.');
+  return pin;
+}
+
+async function assertPin(user: { lockHash?: string | null; lockTries?: number | null; lockUntil?: Date | null; save: () => Promise<unknown> }, pin: string) {
+  if (user.lockUntil && user.lockUntil.getTime() > Date.now()) {
+    throw new HttpError(429, 'Demasiados intentos. Espera un poco y vuelve a probarlo.');
+  }
+  const matches = await bcrypt.compare(pin, user.lockHash || UNKNOWN_PASSWORD_HASH);
+  if (!user.lockHash || !matches) {
+    user.lockTries = (user.lockTries || 0) + 1;
+    if (user.lockTries >= 5) {
+      user.lockUntil = new Date(Date.now() + 15 * 60 * 1000);
+      user.lockTries = 0;
+    }
+    await user.save();
+    throw new HttpError(401, 'El código no coincide.');
+  }
+  if (user.lockTries || user.lockUntil) {
+    user.lockTries = 0;
+    user.lockUntil = null;
+    await user.save();
+  }
 }
 
 function asUsername(value: unknown): string {
@@ -89,10 +117,15 @@ router.post(
   asyncRoute(async (req, res) => {
     const login = asText(req.body?.login ?? req.body?.email, 'El correo o el usuario', 160).toLowerCase();
     const password = asText(req.body?.password, 'La contraseña', 200);
-    const user = await User.findOne({ $or: [{ email: login }, { username: login }] });
+    const user = await User.findOne({ $or: [{ email: login }, { username: login }] }).select('+lockHash');
     const matches = await bcrypt.compare(password, user?.passwordHash || UNKNOWN_PASSWORD_HASH);
     if (!user || !matches) throw new HttpError(401, 'Usuario o contraseña incorrectos.');
-    res.json({ token: signToken(String(user._id), user.email, user.sessionVersion ?? 0), user: publicUser(user) });
+    const id = String(user._id);
+    res.json({
+      token: signToken(id, user.email, user.sessionVersion ?? 0),
+      user: publicUser(user),
+      ...(user.lockHash ? { gate: signGate(id) } : {}),
+    });
   }),
 );
 
@@ -100,7 +133,7 @@ router.get(
   '/me',
   authenticateToken,
   asyncRoute(async (req, res) => {
-    const user = await User.findById((req as AuthRequest).userId);
+    const user = await User.findById((req as AuthRequest).userId).select('+lockHash');
     if (!user) throw new HttpError(401, 'La sesión no es válida.');
     res.json({ user: publicUser(user) });
   }),
@@ -143,7 +176,7 @@ router.post(
     const password = asText(req.body?.password, 'La contraseña', 200);
     if (!/^\d{6}$/.test(code)) throw new HttpError(400, 'El código tiene 6 números.');
     if (password.length < 8) throw new HttpError(400, 'La contraseña necesita al menos 8 caracteres.');
-    const user = await User.findOne({ email });
+    const user = await User.findOne({ email }).select('+lockHash');
     if (!user?.resetCodeHash || !user.resetCodeExpires || user.resetCodeExpires.getTime() < Date.now()) {
       throw new HttpError(400, 'El código ha caducado. Pide otro.');
     }
@@ -159,7 +192,12 @@ router.post(
     user.resetCodeExpires = new Date(0);
     user.resetCodeTries = 0;
     await user.save();
-    res.json({ token: signToken(String(user._id), user.email, user.sessionVersion), user: publicUser(user) });
+    const id = String(user._id);
+    res.json({
+      token: signToken(id, user.email, user.sessionVersion),
+      user: publicUser(user),
+      ...(user.lockHash ? { gate: signGate(id) } : {}),
+    });
   }),
 );
 
@@ -181,7 +219,7 @@ router.patch(
   '/me',
   authenticateToken,
   asyncRoute(async (req, res) => {
-    const user = await User.findById((req as AuthRequest).userId);
+    const user = await User.findById((req as AuthRequest).userId).select('+lockHash');
     if (!user) throw new HttpError(401, 'La sesión no es válida.');
     if (req.body?.name != null) user.name = asText(req.body.name, 'El nombre', 80);
     if (req.body?.username != null) {
@@ -203,6 +241,58 @@ router.patch(
       throw error;
     }
     res.json({ user: publicUser(user) });
+  }),
+);
+
+function lockKey(req: { userId?: string }) {
+  return `lock:${req.userId || 'sesion'}`;
+}
+
+router.post(
+  '/lock',
+  authenticateToken,
+  rateLimit(8, 15 * 60 * 1000, (req) => lockKey(req as AuthRequest)),
+  asyncRoute(async (req, res) => {
+    const pin = asPin(req.body?.pin);
+    const user = await User.findById((req as AuthRequest).userId).select('+lockHash');
+    if (!user) throw new HttpError(401, 'La sesión no es válida.');
+    if (user.lockHash) await assertPin(user, asPin(req.body?.current));
+    user.lockHash = await bcrypt.hash(pin, 12);
+    user.lockTries = 0;
+    user.lockUntil = null;
+    await user.save();
+    res.json({ user: publicUser(user), gate: signGate(String(user._id)) });
+  }),
+);
+
+router.post(
+  '/lock/open',
+  authenticateToken,
+  rateLimit(8, 15 * 60 * 1000, (req) => lockKey(req as AuthRequest)),
+  asyncRoute(async (req, res) => {
+    const user = await User.findById((req as AuthRequest).userId).select('+lockHash');
+    if (!user?.lockHash) throw new HttpError(400, 'Todavía no hay código.');
+    await assertPin(user, asPin(req.body?.pin));
+    res.json({ gate: signGate(String(user._id)) });
+  }),
+);
+
+router.post(
+  '/lock/reset',
+  authenticateToken,
+  rateLimit(8, 15 * 60 * 1000, (req) => lockKey(req as AuthRequest)),
+  asyncRoute(async (req, res) => {
+    const password = asText(req.body?.password, 'La contraseña', 200);
+    const pin = asPin(req.body?.pin);
+    const user = await User.findById((req as AuthRequest).userId).select('+lockHash');
+    if (!user) throw new HttpError(401, 'La sesión no es válida.');
+    const matches = await bcrypt.compare(password, user.passwordHash);
+    if (!matches) throw new HttpError(401, 'La contraseña no coincide.');
+    user.lockHash = await bcrypt.hash(pin, 12);
+    user.lockTries = 0;
+    user.lockUntil = null;
+    await user.save();
+    res.json({ user: publicUser(user), gate: signGate(String(user._id)) });
   }),
 );
 

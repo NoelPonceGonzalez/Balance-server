@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { Account } from '../models/Account.js';
 import { Holding } from '../models/Holding.js';
-import { authenticateToken, type AuthRequest } from '../middleware/auth.js';
+import { authenticateToken, requireGate, type AuthRequest } from '../middleware/auth.js';
 import { asyncRoute, HttpError } from '../http.js';
 import { asClass, asCurrency, asId, asMoney, asOptionalMoney, asRate, asSection, asText } from '../validate.js';
 import { roundMoney } from '../domain/finance.js';
@@ -14,6 +14,7 @@ import { instantInMadrid, isQuoteId, sharesForLump, type QuoteSource } from '../
 
 const router = Router();
 router.use(authenticateToken);
+router.use(requireGate);
 
 function owner(req: AuthRequest) {
   return req.userId as string;

@@ -2,13 +2,14 @@ import { Router } from 'express';
 import { Account } from '../models/Account.js';
 import { Holding } from '../models/Holding.js';
 import { Movement } from '../models/Movement.js';
-import { authenticateToken, type AuthRequest } from '../middleware/auth.js';
+import { authenticateToken, requireGate, type AuthRequest } from '../middleware/auth.js';
 import { asyncRoute, HttpError } from '../http.js';
 import { asClass, asCurrency, asId, asKind, asMoney, asRate, asSections, asText, asTracking } from '../validate.js';
 import { recordSnapshot } from '../services/ledger.js';
 
 const router = Router();
 router.use(authenticateToken);
+router.use(requireGate);
 
 function owner(req: AuthRequest) {
   return req.userId as string;

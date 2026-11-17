@@ -324,6 +324,7 @@ export async function trackListing(userId: string, id: string): Promise<void> {
 
 export async function untrackListing(userId: string, id: string): Promise<void> {
   await TrackedListing.deleteOne({ userId, listingId: id });
+  await Notification.deleteMany({ userId, quoteKey: new RegExp(`^tracked:${id}:`) });
 }
 
 export async function trackedFor(userId: string) {
@@ -398,30 +399,33 @@ async function runTrackedCheck(): Promise<void> {
       continue;
     }
     if (current == null) continue;
-    if (!(await TrackedListing.exists({ _id: row._id }))) continue;
-    row.lastCheckedAt = new Date();
+    const touch = await TrackedListing.updateOne({ _id: row._id }, { $set: { lastCheckedAt: new Date() } });
+    if (touch.matchedCount === 0) continue;
     const floatNote = row.floatValue == null ? '' : ` Float ${row.floatValue.toFixed(4)}.`;
     if (current === 'gone' || (current.state !== 'listed' && current.state !== 'sold')) {
-      row.state = 'gone';
-      row.endedAt = new Date();
-      await row.save();
+      const gone = await TrackedListing.updateOne({ _id: row._id }, { $set: { state: 'gone', endedAt: new Date() } });
+      if (gone.matchedCount === 0) continue;
       await tell(row, { title: 'este anuncio ya no está a la venta', body: `Lo han quitado de CSFloat.${floatNote}`, direction: 'down', priceEur: row.priceEur ?? null });
       continue;
     }
     if (current.state === 'sold') {
-      row.state = 'sold';
-      row.endedAt = current.soldAt ? new Date(current.soldAt) : new Date();
+      const sold = await TrackedListing.updateOne(
+        { _id: row._id },
+        { $set: { state: 'sold', endedAt: current.soldAt ? new Date(current.soldAt) : new Date(), priceEur: current.priceEur, priceCents: current.priceCents } },
+      );
+      if (sold.matchedCount === 0) continue;
       row.priceEur = current.priceEur;
-      row.priceCents = current.priceCents;
-      await row.save();
       await tell(row, { title: 'este anuncio se ha vendido', body: `Se lo han llevado por ${money(current.priceEur)}.${floatNote}`, direction: 'down', priceEur: current.priceEur });
       continue;
     }
     const before = row.priceCents;
     const beforeEur = row.priceEur;
+    const priced = await TrackedListing.updateOne(
+      { _id: row._id, state: 'listed' },
+      { $set: { priceEur: current.priceEur, priceCents: current.priceCents } },
+    );
+    if (priced.matchedCount === 0) continue;
     row.priceEur = current.priceEur;
-    row.priceCents = current.priceCents;
-    await row.save();
     if (before == null || before === current.priceCents) continue;
     const down = current.priceCents < before;
     await tell(row, {
@@ -468,7 +472,10 @@ export async function watchSkin(
 
 export async function unwatchSkin(userId: string, name: string, wear: string) {
   const cleanWear = SKIN_WEARS.includes(wear) ? wear : '';
-  await SkinWatch.deleteOne({ userId, name: name.trim(), wear: cleanWear });
+  const row = await SkinWatch.findOne({ userId, name: name.trim(), wear: cleanWear });
+  if (!row) return;
+  await Notification.deleteMany({ userId, quoteKey: new RegExp(`^skin:${String(row._id)}:`) });
+  await SkinWatch.deleteOne({ _id: row._id, userId });
 }
 
 /** Una skin destacada: avisa si se mueve la más barata de ese desgaste, no un anuncio suelto. */
@@ -511,16 +518,17 @@ async function runSkinWatches(): Promise<void> {
     const wears = (row.wear ? [row.wear] : row.wears).filter((item) => SKIN_WEARS.includes(item));
     if (!wears.length) continue;
     const floor = await floorOf(String(row.userId), row.name, wears, row.paintIndex ?? null);
-    row.lastCheckedAt = new Date();
     if (!floor) {
-      await row.save();
+      await SkinWatch.updateOne({ _id: row._id }, { $set: { lastCheckedAt: new Date() } });
       continue;
     }
-    if (!(await SkinWatch.exists({ _id: row._id }))) continue;
     const before = row.lastBestEur;
-    row.lastBestEur = floor.eur;
+    const wrote = await SkinWatch.updateOne(
+      { _id: row._id },
+      { $set: { lastCheckedAt: new Date(), lastBestEur: floor.eur, ...(floor.image ? { image: floor.image } : {}) } },
+    );
+    if (wrote.matchedCount === 0) continue;
     if (floor.image) row.image = floor.image;
-    await row.save();
     if (before == null) continue;
     const gap = Math.abs(floor.eur - before);
     if (gap < 1 && gap / Math.max(before, 1) < 0.03) continue;

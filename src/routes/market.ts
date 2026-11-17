@@ -4,7 +4,7 @@ import { Holding } from '../models/Holding.js';
 import { Notification } from '../models/Notification.js';
 import { PushSub } from '../models/PushSub.js';
 import { Watch } from '../models/Watch.js';
-import { authenticateToken, type AuthRequest } from '../middleware/auth.js';
+import { authenticateToken, requireGate, type AuthRequest } from '../middleware/auth.js';
 import { asyncRoute, HttpError } from '../http.js';
 import { asId, asMoney, asOptionalMoney, asText } from '../validate.js';
 import { instantInMadrid, isQuoteId, priceGrainNote, sharesForLump, type QuoteSource } from '../domain/market.js';
@@ -22,6 +22,7 @@ import { browseListings, LISTING_SORTS, listingDetail, searchCatalog, skinWatche
 
 const router = Router();
 router.use(authenticateToken);
+router.use(requireGate);
 
 function owner(req: AuthRequest) {
   return req.userId as string;
@@ -414,7 +415,11 @@ router.post(
       enabled: true,
       watching: true,
     });
-    await checkAlerts();
+    try {
+      await checkAlerts();
+    } catch (error) {
+      console.error('avisos', error instanceof Error ? error.message : error);
+    }
     res.json({ ok: true });
   }),
 );
@@ -423,8 +428,15 @@ router.delete(
   '/listen/:id',
   asyncRoute(async (req, res) => {
     const userId = owner(req as AuthRequest);
-    const id = asId(req.params.id, 'El aviso');
-    await Alert.updateOne({ _id: id, userId }, { $set: { watching: false, enabled: false } });
+    const raw = typeof req.params.id === 'string' ? req.params.id : '';
+    let key = raw;
+    try { key = decodeURIComponent(raw); } catch { key = raw; }
+    const alert = /^[a-f0-9]{24}$/i.test(key)
+      ? await Alert.findOne({ _id: key, userId })
+      : await Alert.findOne({ userId, quoteKey: key });
+    if (!alert) throw new HttpError(404, 'Ese aviso ya no está.');
+    await Alert.updateOne({ _id: alert._id, userId }, { $set: { watching: false, enabled: false } });
+    if (alert.quoteKey) await Notification.deleteMany({ userId, quoteKey: alert.quoteKey });
     res.json({ ok: true });
   }),
 );
@@ -447,7 +459,11 @@ router.post(
       { $set: { label, below, maxFloat, paintSeed, enabled: true, ...(rearm ? { belowArmed: true } : {}) }, $setOnInsert: { userId, marketHashName } },
       { upsert: true },
     );
-    await checkPurchaseWatches();
+    try {
+      await checkPurchaseWatches();
+    } catch (error) {
+      console.error('avisos', error instanceof Error ? error.message : error);
+    }
     res.json({ ok: true });
   }),
 );
@@ -457,8 +473,9 @@ router.delete(
   asyncRoute(async (req, res) => {
     const userId = owner(req as AuthRequest);
     const id = asId(req.params.id, 'El aviso');
-    await Watch.updateOne({ _id: id, userId }, { $set: { enabled: false } });
-    await Notification.updateMany({ userId, quoteKey: new RegExp(`^listing:${id}:`), read: { $ne: true } }, { $set: { read: true } });
+    const updated = await Watch.updateOne({ _id: id, userId }, { $set: { enabled: false } });
+    if (updated.matchedCount === 0) throw new HttpError(404, 'Ese aviso ya no está.');
+    await Notification.deleteMany({ userId, quoteKey: new RegExp(`^listing:${id}:`) });
     res.json({ ok: true });
   }),
 );

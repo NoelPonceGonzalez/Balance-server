@@ -6,7 +6,7 @@ import { Extra } from '../models/Extra.js';
 import { Plan } from '../models/Plan.js';
 import { Snapshot } from '../models/Snapshot.js';
 import { User } from '../models/User.js';
-import { authenticateToken, type AuthRequest } from '../middleware/auth.js';
+import { authenticateToken, requireGate, type AuthRequest } from '../middleware/auth.js';
 import { asyncRoute, HttpError } from '../http.js';
 
 const router = Router();
@@ -14,6 +14,7 @@ const router = Router();
 router.get(
   '/',
   authenticateToken,
+  requireGate,
   asyncRoute(async (req, res) => {
     const userId = (req as AuthRequest).userId;
     const user = await User.findById(userId).select('name email theme timezone');

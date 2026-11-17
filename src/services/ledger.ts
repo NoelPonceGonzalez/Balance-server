@@ -716,8 +716,10 @@ export async function getDashboard(userId: string, period: string) {
     fees: { eur: flow.fees.eur, complete: flow.fees.complete },
     variation,
     series: (() => {
+      // Un año entero: Hoy, Semana, Mes, 6 meses y Año recortan esta línea.
+      const seriesFrom = addDays(today, -365);
       const points = snapshots
-        .filter((item) => item.day >= fromDay && item.day <= today && item.day !== today)
+        .filter((item) => item.day >= seriesFrom && item.day <= today && item.day !== today)
         .map((item) => ({ day: item.day, eur: item.valuedEur, complete: item.complete }));
       if (today >= fromDay) points.push({ day: today, eur: shownEur, complete: portfolio.netWorth.complete });
       return points;

@@ -98,8 +98,7 @@ async function runPurchaseWatches(): Promise<void> {
     for (const watch of rows) {
       const asks = board.get(watch.marketHashName);
       if (asks == null) {
-        watch.lastCheckedAt = new Date();
-        await watch.save();
+        await Watch.updateOne({ _id: watch._id, enabled: { $ne: false } }, { $set: { lastCheckedAt: new Date() } });
         continue;
       }
       const low = cheapest(asks);
@@ -111,9 +110,6 @@ async function runPurchaseWatches(): Promise<void> {
       });
       const passed = new Set(watch.passedIds || []);
       const seen = new Set([...(watch.seenIds || []), ...prior]);
-      watch.lastPriceEur = low?.eur ?? null;
-      watch.lastCheckedAt = new Date();
-      watch.place = low?.market || hot[0]?.market || watch.place || '';
       for (const ask of hot) {
         const listing = listingOf(ask.id);
         if (passed.has(ask.id)) continue;
@@ -152,9 +148,18 @@ async function runPurchaseWatches(): Promise<void> {
         }
         seen.add(ask.id);
       }
-      watch.seenIds = [...seen].slice(-800);
-      watch.passedIds = [...passed].slice(-800);
-      await watch.save();
+      await Watch.updateOne(
+        { _id: watch._id, enabled: { $ne: false } },
+        {
+          $set: {
+            lastPriceEur: low?.eur ?? null,
+            lastCheckedAt: new Date(),
+            place: low?.market || hot[0]?.market || watch.place || '',
+            seenIds: [...seen].slice(-800),
+            passedIds: [...passed].slice(-800),
+          },
+        },
+      );
     }
   }
 }

@@ -26,7 +26,7 @@ export interface Candidate {
   name: string;
   image: string | null;
   rank: number | null;
-  kind?: 'crypto' | 'etf' | 'stock';
+  kind?: 'crypto' | 'etf' | 'stock' | 'index';
 }
 
 function searchWords(value: string): string {

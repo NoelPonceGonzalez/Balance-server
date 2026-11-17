@@ -43,7 +43,7 @@ async function eurPer(currency: string): Promise<number | null> {
 }
 
 async function coinPoints(id: string, days: number): Promise<{ at: number; eur: number }[]> {
-  const span = Math.min(365, Math.max(2, Math.round(days)));
+  const span = Math.min(365, Math.max(1, Math.round(days)));
   const data = (await readJson(
     `https://api.coingecko.com/api/v3/coins/${encodeURIComponent(id)}/market_chart?vs_currency=eur&days=${span}`,
     { accept: 'application/json', 'user-agent': 'Mozilla/5.0' },
@@ -55,17 +55,18 @@ async function coinSeries(id: string, days: number): Promise<StoryPoint[]> {
   return (await coinPoints(id, days)).map((point) => ({ at: new Date(point.at).toISOString(), eur: point.eur }));
 }
 
-function yahooRange(days: number): string {
-  if (days <= 5) return '5d';
-  if (days <= 31) return '1mo';
-  if (days <= 90) return '3mo';
-  if (days <= 365) return '1y';
-  return '2y';
+function yahooQuery(days: number): { range: string; interval: string } {
+  if (days <= 1) return { range: '1d', interval: '15m' };
+  if (days <= 7) return { range: '5d', interval: '60m' };
+  if (days <= 31) return { range: '1mo', interval: '1d' };
+  if (days <= 190) return { range: '6mo', interval: '1d' };
+  return { range: '1y', interval: '1d' };
 }
 
 async function yahooPoints(symbol: string, days: number): Promise<{ at: number; eur: number }[]> {
+  const query = yahooQuery(days);
   const data = (await readJson(
-    `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?range=${yahooRange(days)}&interval=1d`,
+    `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?range=${query.range}&interval=${query.interval}`,
     { accept: 'application/json', 'user-agent': 'Mozilla/5.0' },
   )) as {
     chart?: {
@@ -94,11 +95,19 @@ async function yahooSeries(symbol: string, days: number): Promise<StoryPoint[]> 
 }
 
 const SPANS = [
-  { days: 7, label: '7 días' },
-  { days: 30, label: '1 mes' },
-  { days: 90, label: '3 meses' },
-  { days: 365, label: '1 año' },
+  { days: 1, label: 'hoy' },
+  { days: 7, label: 'la semana' },
+  { days: 30, label: 'el mes' },
+  { days: 182, label: 'los 6 meses' },
+  { days: 365, label: 'el año' },
 ] as const;
+
+function trimSeries(series: StoryPoint[], days: number): StoryPoint[] {
+  const cutoff = Date.now() - days * 86_400_000;
+  const kept = series.filter((point) => Date.parse(point.at) >= cutoff);
+  if (kept.length >= 2) return kept;
+  return series.length >= 2 ? series.slice(-2) : series;
+}
 
 function pickSpan(days: number | undefined) {
   const wanted = days && Number.isFinite(days) ? days : 30;
@@ -201,15 +210,17 @@ export async function itemStory(userId: string, input: { kind: string; key: stri
         series = await cachedSeries(`yahoo:${yahooId}:${span.days}`, () => yahooSeries(yahooId, span.days));
       }
       if (series.length < 2) return empty('La fuente no ha mandado el histórico. El precio de la lista sigue siendo el último real.');
-      const move = spanChange(series, span.label);
-      return { series, ...move, floats: [], note: `La gráfica y el porcentaje son el mismo tramo: ${span.label}, en euros.` };
+      const shown = trimSeries(series, span.days);
+      const move = spanChange(shown, span.label);
+      return { series: shown, ...move, floats: [], note: `La gráfica y el porcentaje son el mismo tramo: ${span.label}, en euros.` };
     }
     if ((input.kind === 'etf' || input.kind === 'stock' || input.kind === 'gold' || input.kind === 'silver' || input.kind === 'oil' || input.kind === 'copper' || input.kind === 'index') && input.key.startsWith('yahoo:')) {
       const symbol = input.key.slice('yahoo:'.length);
-      const series = await cachedSeries(`yahoo:${symbol}:${span.days}`, () => yahooSeries(symbol, span.days));
+      const series = trimSeries(await cachedSeries(`yahoo:${symbol}:${span.days}`, () => yahooSeries(symbol, span.days)), span.days);
       const move = spanChange(series, span.label);
       const unit = input.kind === 'index' ? 'en puntos' : 'en euros';
-      return { series, ...move, floats: [], note: `La gráfica y el porcentaje son el cierre de cada día: ${span.label}, ${unit}.` };
+      const grain = span.days <= 7 ? 'el precio de cada momento' : 'el cierre de cada día';
+      return { series, ...move, floats: [], note: `La gráfica y el porcentaje son ${grain}: ${span.label}, ${unit}.` };
     }
     if (input.kind === 'cs2') {
       const context = await skinContext(userId, input.key, input.name);
@@ -223,19 +234,21 @@ export async function itemStory(userId: string, input: { kind: string; key: stri
               if (!band) return [];
               return [{ label: band.label, range: rangeText(band.from, band.to), priceEur: row.priceEur, sales: 0, yours: context.yours === row.wear }];
             });
-        const move = spanChange(board.series, 'en las ventas');
-        const note = board.series.length >= 2
-          ? 'El precio de cada float es la mediana de las ventas de CSFloat. La gráfica y el porcentaje son ese desgaste, de la primera venta a la última.'
+        const series = input.days != null ? trimSeries(board.series, span.days) : board.series;
+        const move = spanChange(series, input.days != null ? span.label : 'en las ventas');
+        const note = series.length >= 2
+          ? `El precio de cada float es la mediana de las ventas de CSFloat. La gráfica y el porcentaje son ese desgaste${input.days != null ? `: ${span.label}` : ', de la primera venta a la última'}.`
           : 'El precio es el de CSFloat. Las ventas de estos días no han llegado, así que no hay línea.';
-        return { series: board.series, ...move, floats, note };
+        return { series, ...move, floats, note };
       }
       const sales = context.commodity ? await pricedHistory(context.commodity, null) : [];
       const series = sales.map((sale) => ({ at: sale.at, eur: sale.eur })).sort((a, b) => a.at.localeCompare(b.at));
-      const move = spanChange(series, 'en las ventas');
-      const note = series.length >= 2
-        ? 'Ventas de CSFloat pasadas a euros. La gráfica y el porcentaje van de la primera a la última.'
+      const shown = input.days != null ? trimSeries(series, span.days) : series;
+      const move = spanChange(shown, input.days != null ? span.label : 'en las ventas');
+      const note = shown.length >= 2
+        ? `Ventas de CSFloat pasadas a euros. La gráfica y el porcentaje son ${input.days != null ? span.label : 'de la primera a la última'}.`
         : 'El precio es el de CSFloat. Las ventas de estos días no han llegado, así que no hay línea.';
-      return { series, ...move, floats: [], note };
+      return { series: shown, ...move, floats: [], note };
     }
     if (input.kind === 'tf2') {
       return empty('TF2 no está en CSFloat, así que no pinto un precio ni una gráfica.');

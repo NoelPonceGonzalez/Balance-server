@@ -5,7 +5,7 @@ import { budgetOf, netsAfterConfirmed, splitTrip, transfersOf } from '../domain/
 import { Account } from '../models/Account.js';
 import { User } from '../models/User.js';
 import { Notification } from '../models/Notification.js';
-import { authenticateToken, type AuthRequest } from '../middleware/auth.js';
+import { authenticateToken, requireGate, type AuthRequest } from '../middleware/auth.js';
 import { asyncRoute, HttpError } from '../http.js';
 import { asDay, asId, asMoney, asOptionalMoney, asPicture, asReceipt, asText } from '../validate.js';
 import { todayKey } from '../domain/finance.js';
@@ -15,6 +15,7 @@ import { breakEvenTarget, editBuy, fillRefs, investView, readBuys, readWatch, se
 
 const router = Router();
 router.use(authenticateToken);
+router.use(requireGate);
 
 function owner(req: AuthRequest) {
   return req.userId as string;
@@ -248,7 +249,7 @@ router.get(
     const invests = await Promise.all(withForecast.map((row) => (row.plan.kind === 'inversion' && row.plan.buys?.length ? investView(userId, row.plan) : null)));
     res.json({
       plans: withForecast.map((row, index) => {
-        const plan = hideReceipts(row.plan);
+        const plan = hideReceipts(row.plan, userId);
         return {
           plan,
           forecast: row.forecast,
@@ -812,15 +813,23 @@ router.delete(
   }),
 );
 
-function hideReceipts(plan: { toObject: () => Record<string, unknown> }) {
+function hideReceipts(plan: { userId?: unknown; toObject: () => Record<string, unknown> }, viewerId: string) {
   const raw = plan.toObject();
+  const owner = String(plan.userId) === viewerId;
+  if (!owner) {
+    delete raw.joinCode;
+    delete raw.linkedAccountIds;
+    delete raw.cashMoves;
+    delete raw.manualRealBalance;
+  }
   const expenses = raw.tripExpenses;
   if (!Array.isArray(expenses)) return raw;
   return {
     ...raw,
     tripExpenses: expenses.map((expense) => {
-      const row = expense as { charge?: string; receipt?: string };
-      return { ...row, receipt: row.charge === 'pending' ? row.receipt || '' : '' };
+      const row = expense as { charge?: string; paidBy?: unknown; receipt?: string };
+      const forViewer = row.charge === 'pending' && String(row.paidBy) === viewerId;
+      return { ...row, receipt: forViewer ? row.receipt || '' : '' };
     }),
   };
 }

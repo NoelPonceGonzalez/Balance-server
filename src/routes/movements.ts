@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { Movement } from '../models/Movement.js';
-import { authenticateToken, type AuthRequest } from '../middleware/auth.js';
+import { authenticateToken, requireGate, type AuthRequest } from '../middleware/auth.js';
 import { asyncRoute, HttpError } from '../http.js';
 import { asDay, asId, asMoney, asOptionalMoney, asText, asTicker, asType } from '../validate.js';
 import { createMovement, deleteMovement, updateMovement, type MovementInput } from '../services/ledger.js';
@@ -8,6 +8,7 @@ import { syncInvestPlans } from '../services/invest-watch.js';
 
 const router = Router();
 router.use(authenticateToken);
+router.use(requireGate);
 
 function owner(req: AuthRequest) {
   return req.userId as string;
