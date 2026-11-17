@@ -9,6 +9,8 @@ import { authenticateToken, signGate, signToken, type AuthRequest } from '../mid
 import { asyncRoute, rateLimit } from '../http.js';
 import { HttpError } from '../http.js';
 import { mailEnabled, sendPasswordCode } from '../services/mail.js';
+import { authenticationOptions, openWithPasskey, registrationOptions, storeRegistration } from '../services/passkey.js';
+import type { AuthenticationResponseJSON, RegistrationResponseJSON } from '@simplewebauthn/server';
 import { asText } from '../validate.js';
 
 const router = Router();
@@ -22,7 +24,7 @@ function attemptKey(field: 'login' | 'email') {
   };
 }
 
-function publicUser(user: { _id: unknown; name: string; username?: string | null; email: string; theme?: string; timezone?: string; lockHash?: string | null }) {
+function publicUser(user: { _id: unknown; name: string; username?: string | null; email: string; theme?: string; timezone?: string; lockHash?: string | null; passkey?: boolean | null }) {
   return {
     id: String(user._id),
     name: user.name,
@@ -31,6 +33,7 @@ function publicUser(user: { _id: unknown; name: string; username?: string | null
     theme: user.theme || 'system',
     timezone: user.timezone || 'Europe/Madrid',
     lock: Boolean(user.lockHash),
+    passkey: Boolean(user.passkey),
   };
 }
 
@@ -293,6 +296,72 @@ router.post(
     user.lockUntil = null;
     await user.save();
     res.json({ user: publicUser(user), gate: signGate(String(user._id)) });
+  }),
+);
+
+async function userForPasskey(req: AuthRequest, withKeys: boolean) {
+  const fields = withKeys ? '+lockHash +passkeys +passkeyChallenge +passkeyChallengeAt' : '+lockHash';
+  const user = await User.findById(req.userId).select(fields);
+  if (!user) throw new HttpError(401, 'La sesión no es válida.');
+  if (!user.lockHash) throw new HttpError(400, 'Todavía no hay código.');
+  return user;
+}
+
+function assertGate(req: AuthRequest, userId: string) {
+  const header = req.headers['x-balance-gate'];
+  const token = typeof header === 'string' ? header : '';
+  if (!token) throw new HttpError(401, 'Hace falta el código para guardar la huella.', 'lock');
+  try {
+    const payload = jwt.verify(token, config.jwtSecret, { algorithms: ['HS256'] }) as { purpose?: string; userId?: string };
+    if (payload.purpose !== 'gate' || payload.userId !== userId) throw new Error('gate');
+  } catch {
+    throw new HttpError(401, 'Hace falta el código para guardar la huella.', 'lock');
+  }
+}
+
+router.post(
+  '/passkey/register/options',
+  authenticateToken,
+  rateLimit(8, 15 * 60 * 1000, (req) => lockKey(req as AuthRequest)),
+  asyncRoute(async (req, res) => {
+    const authReq = req as AuthRequest;
+    const user = await userForPasskey(authReq, true);
+    assertGate(authReq, String(user._id));
+    res.json(await registrationOptions(user, req.get('origin')));
+  }),
+);
+
+router.post(
+  '/passkey/register',
+  authenticateToken,
+  rateLimit(8, 15 * 60 * 1000, (req) => lockKey(req as AuthRequest)),
+  asyncRoute(async (req, res) => {
+    const authReq = req as AuthRequest;
+    const user = await userForPasskey(authReq, true);
+    assertGate(authReq, String(user._id));
+    await storeRegistration(user, req.body as RegistrationResponseJSON, req.get('origin'));
+    res.json({ user: publicUser(user) });
+  }),
+);
+
+router.post(
+  '/passkey/options',
+  authenticateToken,
+  rateLimit(8, 15 * 60 * 1000, (req) => lockKey(req as AuthRequest)),
+  asyncRoute(async (req, res) => {
+    const user = await userForPasskey(req as AuthRequest, true);
+    res.json(await authenticationOptions(user, req.get('origin')));
+  }),
+);
+
+router.post(
+  '/passkey/open',
+  authenticateToken,
+  rateLimit(8, 15 * 60 * 1000, (req) => lockKey(req as AuthRequest)),
+  asyncRoute(async (req, res) => {
+    const user = await userForPasskey(req as AuthRequest, true);
+    await openWithPasskey(user, req.body as AuthenticationResponseJSON, req.get('origin'));
+    res.json({ gate: signGate(String(user._id)) });
   }),
 );
 
