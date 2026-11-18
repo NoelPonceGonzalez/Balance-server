@@ -411,15 +411,25 @@ export interface MovementDraft {
   accountId: string;
   counterAccountId?: string | null;
   holdingId?: string | null;
+  /** La misma moneda en la cuenta de destino, cuando el traspaso mueve la pieza y no el efectivo. */
+  counterHoldingId?: string | null;
   quantity?: number | null;
   applyToBalances: boolean;
   direction?: 'in' | 'out';
 }
 
+export interface HoldingEffect {
+  holdingId: string;
+  quantityDelta: number;
+  costBasisDelta: number | null;
+  clearMarket: boolean;
+}
+
 export interface AppliedEffects {
   applied: boolean;
   accountDeltas: { accountId: string; amount: number }[];
-  holding?: { holdingId: string; quantityDelta: number; costBasisDelta: number | null; clearMarket: boolean };
+  holding?: HoldingEffect;
+  counterHolding?: HoldingEffect;
   costOfSold: number | null;
   warning?: string;
 }
@@ -457,6 +467,45 @@ export function applyMovementToBooks(
     account.balance = roundMoney(account.balance + delta);
     deltas.push({ accountId: account.id, amount: roundMoney(delta) });
   };
+
+  if (movement.type === 'transfer' && movement.holdingId) {
+    if (!movement.counterAccountId) return { error: 'Una transferencia necesita cuenta de destino.' };
+    if (movement.counterAccountId === movement.accountId) return { error: 'El origen y el destino tienen que ser distintos.' };
+    if (!next.accounts.some((account) => account.id === movement.counterAccountId)) return { error: 'La cuenta de destino no existe.' };
+    const source = next.holdings.find((item) => item.id === movement.holdingId);
+    if (!source || source.accountId !== primary.id) return { error: 'El activo no está en esa cuenta.' };
+    const target = next.holdings.find((item) => item.id === movement.counterHoldingId);
+    if (!target || target.accountId !== movement.counterAccountId) return { error: 'El activo de destino no está en esa cuenta.' };
+    const qty = movement.quantity ?? 0;
+    if (!(qty > 0)) return { error: 'Indica la cantidad del activo.' };
+    if (qty - source.quantity > 1e-8) return { error: 'No puedes pasar más cantidad de la que tienes.' };
+    const ratio = source.quantity > 0 ? qty / source.quantity : 0;
+    const costMoved = source.costBasis == null ? null : roundMoney(source.costBasis * ratio);
+    if (source.costBasis != null && costMoved != null) source.costBasis = roundMoney(source.costBasis - costMoved);
+    source.quantity = roundQty(source.quantity - qty);
+    target.quantity = roundQty(target.quantity + qty);
+    if (costMoved != null) target.costBasis = roundMoney((target.costBasis ?? 0) + costMoved);
+    return {
+      books: next,
+      effects: {
+        applied: true,
+        accountDeltas: [],
+        holding: {
+          holdingId: source.id,
+          quantityDelta: roundQty(-qty),
+          costBasisDelta: costMoved == null ? null : roundMoney(-costMoved),
+          clearMarket: false,
+        },
+        counterHolding: {
+          holdingId: target.id,
+          quantityDelta: roundQty(qty),
+          costBasisDelta: costMoved,
+          clearMarket: false,
+        },
+        costOfSold: null,
+      },
+    };
+  }
 
   if (movement.type === 'transfer') {
     if (!movement.counterAccountId) return { error: 'Una transferencia necesita cuenta de destino.' };
@@ -566,16 +615,20 @@ export function revertEffects(books: Books, effects: AppliedEffects): Books | { 
     if (!account) return { error: 'No se puede deshacer: falta una cuenta.' };
     account.balance = roundMoney(account.balance - delta.amount);
   }
-  if (effects.holding) {
-    const holding = next.holdings.find((h) => h.id === effects.holding!.holdingId);
-    if (!holding) return { error: 'No se puede deshacer: falta el activo.' };
-    holding.quantity = roundQty(holding.quantity - effects.holding.quantityDelta);
-    if (holding.quantity < -1e-8) return { error: 'No se puede deshacer porque el activo ya no tiene esa cantidad.' };
+  const undo = (effect: HoldingEffect | undefined): string | null => {
+    if (!effect) return null;
+    const holding = next.holdings.find((item) => item.id === effect.holdingId);
+    if (!holding) return 'No se puede deshacer: falta el activo.';
+    holding.quantity = roundQty(holding.quantity - effect.quantityDelta);
+    if (holding.quantity < -1e-8) return 'No se puede deshacer porque el activo ya no tiene esa cantidad.';
     if (holding.quantity < 0) holding.quantity = 0;
-    if (effects.holding.costBasisDelta != null && holding.costBasis != null) {
-      holding.costBasis = roundMoney(holding.costBasis - effects.holding.costBasisDelta);
+    if (effect.costBasisDelta != null && holding.costBasis != null) {
+      holding.costBasis = roundMoney(holding.costBasis - effect.costBasisDelta);
     }
-  }
+    return null;
+  };
+  const undone = undo(effects.holding) || undo(effects.counterHolding);
+  if (undone) return { error: undone };
   return next;
 }
 

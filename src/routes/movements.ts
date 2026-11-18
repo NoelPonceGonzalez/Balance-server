@@ -23,6 +23,7 @@ function readInput(body: Record<string, unknown>): MovementInput {
   const apply = body.applyToBalances !== false;
   const currency = asTicker(body.currency || 'EUR');
   const direction = body.direction == null || body.direction === '' ? undefined : body.direction === 'in' || body.direction === 'out' ? body.direction : undefined;
+  const coinPass = type === 'transfer' && body.holdingId != null && String(body.holdingId) !== '';
   if (type === 'adjustment' && apply && !direction) throw new HttpError(400, 'El ajuste tiene que decir si el saldo sube o baja.');
   return {
     type,
@@ -34,8 +35,9 @@ function readInput(body: Record<string, unknown>): MovementInput {
     description: asText(body.description, 'La descripción', 500, false),
     accountId: asId(body.accountId, 'La cuenta') as string,
     counterAccountId: asId(body.counterAccountId, 'La cuenta de destino', type === 'transfer' && apply),
-    holdingId: asId(body.holdingId, 'El activo', (type === 'buy' || type === 'sell') && apply),
-    quantity: (type === 'buy' || type === 'sell') && apply ? asMoney(body.quantity, 'La cantidad') : asOptionalMoney(body.quantity, 'La cantidad'),
+    holdingId: asId(body.holdingId, 'El activo', ((type === 'buy' || type === 'sell') && apply) || (coinPass && apply)),
+    counterHoldingId: asId(body.counterHoldingId, 'El activo de destino', coinPass && apply),
+    quantity: ((type === 'buy' || type === 'sell') && apply) || (coinPass && apply) ? asMoney(body.quantity, 'La cantidad') : asOptionalMoney(body.quantity, 'La cantidad'),
     direction,
     fee: asOptionalMoney(body.fee, 'La comisión'),
     applyToBalances: apply,

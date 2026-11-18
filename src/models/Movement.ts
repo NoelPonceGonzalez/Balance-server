@@ -17,6 +17,7 @@ const MovementSchema = new mongoose.Schema(
     accountId: { type: mongoose.Schema.Types.ObjectId, ref: 'PatAccount', required: true },
     counterAccountId: { type: mongoose.Schema.Types.ObjectId, ref: 'PatAccount', default: null },
     holdingId: { type: mongoose.Schema.Types.ObjectId, ref: 'PatHolding', default: null },
+    counterHoldingId: { type: mongoose.Schema.Types.ObjectId, ref: 'PatHolding', default: null },
     quantity: { type: Number, default: null },
     direction: { type: String, enum: ['in', 'out'], required: false },
     fee: { type: Number, default: null },

@@ -81,7 +81,7 @@ router.post(
       symbol: asText(req.body?.symbol, 'El símbolo', 20, false).toUpperCase(),
       assetClass: asClass(req.body?.assetClass),
       currency,
-      quantity: buy ? buy.quantity : asMoney(req.body?.quantity, 'La cantidad'),
+      quantity: buy ? buy.quantity : asMoney(req.body?.quantity, 'La cantidad', true),
       unitMarketValue: unitMarket,
       valuedAt: unitMarket == null ? null : new Date(),
       costBasis: buy ? buy.spentEur : asOptionalMoney(req.body?.costBasis, 'El coste de adquisición'),

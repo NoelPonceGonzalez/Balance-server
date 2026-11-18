@@ -136,15 +136,19 @@ function readEffects(raw: unknown): AppliedEffects {
     accountDeltas: Array.isArray(value.accountDeltas)
       ? value.accountDeltas.map((delta) => ({ accountId: String(delta.accountId), amount: Number(delta.amount) }))
       : [],
-    holding: value.holding
-      ? {
-          holdingId: String(value.holding.holdingId),
-          quantityDelta: Number(value.holding.quantityDelta),
-          costBasisDelta: value.holding.costBasisDelta == null ? null : Number(value.holding.costBasisDelta),
-          clearMarket: false,
-        }
-      : undefined,
+    holding: readHoldingEffect(value.holding),
+    counterHolding: readHoldingEffect(value.counterHolding),
     costOfSold: value.costOfSold == null ? null : Number(value.costOfSold),
+  };
+}
+
+function readHoldingEffect(raw: AppliedEffects['holding']): AppliedEffects['holding'] {
+  if (!raw) return undefined;
+  return {
+    holdingId: String(raw.holdingId),
+    quantityDelta: Number(raw.quantityDelta),
+    costBasisDelta: raw.costBasisDelta == null ? null : Number(raw.costBasisDelta),
+    clearMarket: false,
   };
 }
 
@@ -159,6 +163,7 @@ export interface MovementInput {
   accountId: string;
   counterAccountId?: string | null;
   holdingId?: string | null;
+  counterHoldingId?: string | null;
   quantity?: number | null;
   direction?: 'in' | 'out';
   fee?: number | null;
@@ -173,6 +178,7 @@ function draftOf(input: MovementInput): MovementDraft {
     accountId: input.accountId,
     counterAccountId: input.counterAccountId,
     holdingId: input.holdingId,
+    counterHoldingId: input.counterHoldingId,
     quantity: input.quantity,
     applyToBalances: input.applyToBalances,
     direction: input.direction,

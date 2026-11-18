@@ -244,6 +244,46 @@ describe('movimientos', () => {
     assert.equal(back.accounts.find((a) => a.id === 'tr')?.balance, 100);
   });
 
+  it('pasa una moneda de una cuenta a otra con su coste y sin tocar el efectivo', () => {
+    const books: Books = {
+      accounts: [
+        account({ id: 'okx', name: 'OKX', kind: 'exchange', tracking: 'positions', balance: 0 }),
+        account({ id: 'tr', name: 'TR', kind: 'broker', tracking: 'positions', balance: 80 }),
+      ],
+      holdings: [
+        holding({ id: 'okx-btc', accountId: 'okx', name: 'Bitcoin', assetClass: 'crypto', quantity: 0.03, costBasis: 1800 }),
+        holding({ id: 'tr-btc', accountId: 'tr', name: 'Bitcoin', assetClass: 'crypto', quantity: 0.04, costBasis: 3000 }),
+      ],
+    };
+    const moved = applyMovementToBooks(books, {
+      type: 'transfer',
+      amount: 1700,
+      accountId: 'okx',
+      counterAccountId: 'tr',
+      holdingId: 'okx-btc',
+      counterHoldingId: 'tr-btc',
+      quantity: 0.03,
+      applyToBalances: true,
+    });
+    assert.ok(!('error' in moved));
+    if ('error' in moved) return;
+    assert.equal(moved.books.accounts.find((item) => item.id === 'okx')?.balance, 0);
+    assert.equal(moved.books.accounts.find((item) => item.id === 'tr')?.balance, 80);
+    assert.equal(moved.books.holdings.find((item) => item.id === 'okx-btc')?.quantity, 0);
+    assert.equal(moved.books.holdings.find((item) => item.id === 'okx-btc')?.costBasis, 0);
+    assert.equal(moved.books.holdings.find((item) => item.id === 'tr-btc')?.quantity, 0.07);
+    assert.equal(moved.books.holdings.find((item) => item.id === 'tr-btc')?.costBasis, 4800);
+    assert.equal(moved.effects.costOfSold, null);
+    const back = revertEffects(moved.books, moved.effects);
+    assert.ok(!('error' in back));
+    if ('error' in back) return;
+    assert.equal(back.holdings.find((item) => item.id === 'okx-btc')?.quantity, 0.03);
+    assert.equal(back.holdings.find((item) => item.id === 'okx-btc')?.costBasis, 1800);
+    assert.equal(back.holdings.find((item) => item.id === 'tr-btc')?.quantity, 0.04);
+    assert.equal(back.holdings.find((item) => item.id === 'tr-btc')?.costBasis, 3000);
+    assert.equal(back.accounts.find((item) => item.id === 'tr')?.balance, 80);
+  });
+
   it('rechaza vender de más y pegar una frase semilla', () => {
     const books: Books = {
       accounts: [account({ id: 'tr', name: 'TR', kind: 'broker', tracking: 'positions', balance: 0 })],
